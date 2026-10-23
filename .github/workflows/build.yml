@@ -1,0 +1,103 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Install the stable toolchain
+      run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
+
+    - name: Format
+      run: cargo fmt --all -- --check
+
+    - name: Clippy
+      run: |
+        cargo clippy --all-targets --all-features -- -D warnings
+        cargo clippy --lib --no-default-features -- -D warnings
+
+    # The live S3 tests skip themselves without S3_FLEET_TEST_*.
+    - name: Test
+      run: cargo test --release
+
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Cross-compile both targets
+      run: ./build.sh
+
+    - name: Smoke-test the amd64 binary
+      run: |
+        version=$(./dist/s3-fleet.amd64 --version)
+        echo "$version"
+        [[ "$version" == s3-fleet\ * ]]
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v7
+      with:
+        name: s3-fleet-binaries
+        path: dist/
+        retention-days: 30
+
+  release:
+    needs: [ test, build ]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+
+    - name: Download binaries
+      uses: actions/download-artifact@v8
+      with:
+        name: s3-fleet-binaries
+        path: dist
+
+    - name: Check tag matches Cargo.toml version
+      run: |
+        version=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)
+        if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+          echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
+          exit 1
+        fi
+
+    - name: Prepare release assets
+      run: |
+        version="${GITHUB_REF_NAME#v}"
+        mkdir assets
+        mv dist/s3-fleet.amd64 "assets/s3-fleet_${version}_linux_amd64"
+        mv dist/s3-fleet.arm64 "assets/s3-fleet_${version}_linux_arm64"
+        chmod +x assets/*
+        cd assets
+        sha256sum s3-fleet_* > SHA256SUMS
+
+    # Draft: sign-release.sh signs the assets and publishes it. A published
+    # release's assets can no longer be replaced once immutability is enabled.
+    - name: Create Release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh release create "$GITHUB_REF_NAME" \
+          --draft \
+          --title "s3-fleet $GITHUB_REF_NAME" \
+          --notes "$(git tag -l --format='%(contents:body)' "$GITHUB_REF_NAME")" \
+          assets/*
