@@ -20,13 +20,14 @@
 //! # What the library does not do
 //!
 //! It never retries, never falls back to a cached copy and never prompts: each
-//! of those hides a signal its caller may need. The `cache` module is a
+//! of those hides a signal its caller may need. The [`cache`] module is a
 //! separate, opt-in layer whose results say where they came from and how old
 //! they are. Every fallible call returns a typed error with its source chain.
 //!
 //! The API is async (tokio): ssh-keyscan runs under `tokio::process`, and HTTP
 //! goes through reqwest's async client.
 
+pub mod cache;
 pub mod discover;
 pub mod doc;
 pub mod fleet;
