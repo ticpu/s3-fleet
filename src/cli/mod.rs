@@ -22,6 +22,7 @@ pub mod commands;
 pub mod config;
 pub mod exit;
 pub mod setup;
+pub mod ssh;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -145,6 +146,15 @@ pub enum Command {
         /// Write to this file atomically instead of stdout
         #[arg(short, long)]
         output: Option<PathBuf>,
+    },
+    /// Run ssh to a fleet host, trusting only its pinned keys
+    Ssh {
+        /// [USER@]HOST, a host in the fleet
+        #[arg(add = ArgValueCandidates::new(commands::cached_hosts))]
+        destination: String,
+        /// Passed to ssh after the destination: options, then the remote command
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<std::ffi::OsString>,
     },
 }
 

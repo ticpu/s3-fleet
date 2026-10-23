@@ -6,87 +6,10 @@
 
 mod common;
 
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::Command;
 
+use common::cli::{Sandbox, args, live_args, run, with_keys};
 use s3_fleet::Fleet;
-
-const BIN: &str = env!("CARGO_BIN_EXE_s3-fleet");
-
-struct Sandbox {
-    dir: tempfile::TempDir,
-}
-
-impl Sandbox {
-    fn new() -> Self {
-        let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
-        std::fs::write(
-            dir.path()
-                .join("config.yaml"),
-            "{}\n",
-        )
-        .unwrap();
-        Self { dir }
-    }
-
-    fn path(&self) -> &Path {
-        self.dir
-            .path()
-    }
-
-    /// The binary with isolated XDG dirs and no AWS keys unless added.
-    fn cmd(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new(BIN);
-        cmd.args(["--config"])
-            .arg(
-                self.path()
-                    .join("config.yaml"),
-            )
-            .args(args)
-            .env(
-                "XDG_CACHE_HOME",
-                self.path()
-                    .join("cache"),
-            )
-            .env(
-                "XDG_CONFIG_HOME",
-                self.path()
-                    .join("config"),
-            )
-            .env_remove("AWS_ACCESS_KEY_ID")
-            .env_remove("AWS_SECRET_ACCESS_KEY")
-            .env_remove("AWS_SESSION_TOKEN")
-            .env_remove("S3_FLEET")
-            .env_remove("S3_FLEET_ENDPOINT")
-            .env_remove("S3_FLEET_REGION")
-            .env_remove("RUST_LOG")
-            .stdin(Stdio::null());
-        cmd
-    }
-
-    fn cache_file(&self, fleet: &str) -> PathBuf {
-        self.path()
-            .join("cache/s3-fleet")
-            .join(format!("{fleet}.yaml"))
-    }
-}
-
-fn run(cmd: &mut Command) -> (i32, String, String) {
-    let Output {
-        status,
-        stdout,
-        stderr,
-    } = cmd
-        .output()
-        .unwrap();
-    (
-        status
-            .code()
-            .expect("exited, not signalled"),
-        String::from_utf8(stdout).unwrap(),
-        String::from_utf8(stderr).unwrap(),
-    )
-}
 
 #[test]
 fn usage_errors_exit_2_without_touching_the_network() {
@@ -122,47 +45,6 @@ fn cached_known_hosts_without_a_cache_fails_offline() {
         run(&mut sb.cmd(&["-f", "fleet", "known-hosts", "--cached", "--host", "h"]));
     assert_eq!(code, 1, "{err}");
     assert!(out.is_empty());
-}
-
-fn live_args(live: &common::Live) -> Vec<String> {
-    vec![
-        "-f".into(),
-        live.bucket
-            .clone(),
-        "--endpoint".into(),
-        live.endpoint
-            .authority
-            .clone(),
-        "--region".into(),
-        live.endpoint
-            .region
-            .clone(),
-    ]
-}
-
-fn with_keys(cmd: &mut Command, live: &common::Live) {
-    cmd.env(
-        "AWS_ACCESS_KEY_ID",
-        &live
-            .credentials
-            .access_key,
-    )
-    .env(
-        "AWS_SECRET_ACCESS_KEY",
-        &live
-            .credentials
-            .secret_key,
-    );
-}
-
-fn args<'a>(base: &'a [String], more: &[&'a str]) -> Vec<&'a str> {
-    base.iter()
-        .map(String::as_str)
-        .chain(
-            more.iter()
-                .copied(),
-        )
-        .collect()
 }
 
 #[test]
@@ -329,4 +211,44 @@ async fn add_label_known_hosts_rekey_rm() {
     assert_eq!(code, 0, "{err}");
     let (code, _, err) = signed(&["rm", "localhost"]);
     assert_eq!(code, 1, "not in the fleet any more: {err}");
+}
+
+#[test]
+fn completion_offers_cached_hosts_offline() {
+    let sb = Sandbox::new();
+    let mut doc = s3_fleet::FleetDoc::new();
+    let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBmcY94uJ8nfRLVFBp/kPsyfZq54fZCLKJk8GCwvUlCa";
+    for host in ["web1.example", "web2.example", "db1.example"] {
+        doc.pin_host(host, 22, vec![key.to_string()], false)
+            .unwrap();
+    }
+    s3_fleet::cache::Cache::new(
+        sb.path()
+            .join("cache/s3-fleet"),
+    )
+    .store("compfleet", &doc)
+    .unwrap();
+
+    // What the script from `COMPLETE=bash s3-fleet` runs for `s3-fleet ssh web<TAB>`.
+    let (code, out, err) = run(Command::new(common::cli::BIN)
+        .args(["--", "s3-fleet", "ssh", "web"])
+        .env("COMPLETE", "bash")
+        .env("_CLAP_IFS", "\n")
+        .env("_CLAP_COMPLETE_INDEX", "2")
+        .env("_CLAP_COMPLETE_COMP_TYPE", "9")
+        .env("_CLAP_COMPLETE_SPACE", "true")
+        .env("S3_FLEET", "compfleet")
+        .env(
+            "XDG_CACHE_HOME",
+            sb.path()
+                .join("cache"),
+        )
+        .env("S3_FLEET_ENDPOINT", "127.0.0.1:1")
+        .env("S3_FLEET_REGION", "x"));
+    assert_eq!(code, 0, "{err}");
+    let mut offered: Vec<&str> = out
+        .lines()
+        .collect();
+    offered.sort();
+    assert_eq!(offered, ["web1.example", "web2.example"], "{out:?}");
 }

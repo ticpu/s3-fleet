@@ -25,7 +25,7 @@ use clap_complete::CompleteEnv;
 use tracing_subscriber::EnvFilter;
 
 use cli::exit::{Exit, exit_code};
-use cli::{Cli, Command, Ctx, commands, setup};
+use cli::{Cli, Command, Ctx, commands, setup, ssh};
 
 fn main() -> ExitCode {
     CompleteEnv::with_factory(Cli::command).complete();
@@ -85,6 +85,16 @@ async fn run(cli: &Cli) -> anyhow::Result<Exit> {
         } => {
             commands::known_hosts(&ctx, selectors, host.as_deref(), *cached, output.as_deref())
                 .await
+        }
+        Command::Ssh { destination, args } => {
+            ssh::run(
+                &ctx,
+                cli.config
+                    .as_deref(),
+                destination,
+                args,
+            )
+            .await
         }
     }
 }
