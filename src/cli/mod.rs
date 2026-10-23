@@ -49,10 +49,10 @@ pub struct Cli {
     /// Fleet name, which is also its bucket
     #[arg(long, short = 'f', env = "S3_FLEET", global = true)]
     pub fleet: Option<String>,
-    /// S3 endpoint as host[:port]; skips DNS discovery (needs --region)
+    /// S3 endpoint as host[:port]; skips DNS discovery
     #[arg(long, env = "S3_FLEET_ENDPOINT", global = true)]
     pub endpoint: Option<String>,
-    /// S3 signing region, with --endpoint
+    /// S3 signing region, with --endpoint [default: us-east-1]
     #[arg(long, env = "S3_FLEET_REGION", global = true)]
     pub region: Option<String>,
     /// Use only this config file instead of /etc and XDG ones

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use etcetera::BaseStrategy;
 use s3_fleet::discover::{self, DiscoverError};
-use s3_fleet::s3::{Credentials, Endpoint};
+use s3_fleet::s3::{Credentials, DEFAULT_REGION, Endpoint};
 use serde::Deserialize;
 use tracing::debug;
 
@@ -156,15 +156,12 @@ pub async fn resolve_endpoint(
     fleet: &str,
 ) -> anyhow::Result<(Endpoint, EndpointSource)> {
     if let Some(authority) = endpoint {
-        let region = region.ok_or_else(|| {
-            ConfigError::Usage(
-                "--endpoint (S3_FLEET_ENDPOINT) needs --region (S3_FLEET_REGION)".into(),
-            )
-        })?;
         return Ok((
             Endpoint {
                 authority: authority.to_string(),
-                region: region.to_string(),
+                region: region
+                    .unwrap_or(DEFAULT_REGION)
+                    .to_string(),
             },
             EndpointSource::CommandLine,
         ));
@@ -179,24 +176,26 @@ pub async fn resolve_endpoint(
         .iter()
         .rev()
     {
-        let Some(authority) = &layer
-            .config
-            .endpoint
-        else {
-            continue;
-        };
-        let region = layer
-            .config
-            .region
-            .clone()
-            .ok_or_else(|| {
-                ConfigError::Usage(format!(
-                    "{}: endpoint is set without region",
+        let config = &layer.config;
+        let Some(authority) = &config.endpoint else {
+            if config
+                .region
+                .is_some()
+            {
+                return Err(ConfigError::Usage(format!(
+                    "{}: region is only used with endpoint",
                     layer
                         .path
                         .display()
                 ))
-            })?;
+                .into());
+            }
+            continue;
+        };
+        let region = config
+            .region
+            .clone()
+            .unwrap_or_else(|| DEFAULT_REGION.to_string());
         return Ok((
             Endpoint {
                 authority: authority.clone(),
@@ -341,18 +340,28 @@ mod tests {
         assert_eq!(e.authority, "[::1]:7480");
         assert!(matches!(src, EndpointSource::CommandLine));
 
+        let (e, _) = resolve_endpoint(Some("x"), None, &layers, "f")
+            .await
+            .unwrap();
+        assert_eq!(e.region, DEFAULT_REGION, "flag endpoint, default region");
+        let bare = [layer("/home", "endpoint: x\n")];
+        let (e, _) = resolve_endpoint(None, None, &bare, "f")
+            .await
+            .unwrap();
+        assert_eq!(e.region, DEFAULT_REGION, "file endpoint, default region");
+
+        let stray = [layer("/etc", "region: r\n")];
         assert!(
-            resolve_endpoint(Some("x"), None, &layers, "f")
+            resolve_endpoint(None, None, &stray, "f")
                 .await
                 .is_err(),
-            "an endpoint without its region"
+            "a file region with no endpoint would be ignored"
         );
-        let half = [layer("/home", "endpoint: x\n")];
         assert!(
-            resolve_endpoint(None, None, &half, "f")
+            resolve_endpoint(None, Some("r"), &layers, "f")
                 .await
                 .is_err(),
-            "a file endpoint without its region"
+            "a flag region with no endpoint would be ignored"
         );
     }
 }

@@ -25,8 +25,8 @@ fn usage_errors_exit_2_without_touching_the_network() {
     let (code, _, err) = run(&mut sb.cmd(&["-f", "fleet", "list", "-l", "a b"]));
     assert_eq!(code, 2, "{err}");
 
-    let (code, _, err) = run(&mut sb.cmd(&["-f", "fleet", "--endpoint", "x", "list"]));
-    assert_eq!(code, 2, "an endpoint without a region: {err}");
+    let (code, _, err) = run(&mut sb.cmd(&["-f", "fleet", "--region", "r", "list"]));
+    assert_eq!(code, 2, "a region with no endpoint to apply to: {err}");
 }
 
 #[test]

@@ -3,9 +3,12 @@
 //! The record is a TXT record:
 //!
 //! ```text
-//! _s3-fleet.prod-sbc  IN TXT "v=s3-fleet1 endpoint=s3.example.net region=default"
-//! _s3-fleet           IN TXT "v=s3-fleet1 endpoint=s3.example.net region=default"
+//! _s3-fleet.prod-sbc  IN TXT "v=s3-fleet1 endpoint=s3-prod.example.net region=prod"
+//! _s3-fleet           IN TXT "v=s3-fleet1 endpoint=s3.example.net"
 //! ```
+//!
+//! `region` is optional and defaults to [`DEFAULT_REGION`]; the S3 client's
+//! notes say when it matters.
 //!
 //! For fleet `<f>`, `_s3-fleet.<f>` is queried first, then `_s3-fleet`. The
 //! per-fleet name lets fleets live on different clusters; the bare one serves
@@ -14,11 +17,11 @@
 //! with no configuration, and the binary carries no site's domain.
 //!
 //! The text is space-separated `key=value` pairs; `v=s3-fleet1` must come
-//! first. An unknown version, a missing or repeated key, or two records
-//! answering the same name is an error, never a guess between them. Unknown
-//! keys are ignored so that a later version can add some without breaking
-//! readers, which is the opposite of the fleet document's rule: a TXT record
-//! is never written back.
+//! first. An unknown version, a missing endpoint, a repeated key, or two
+//! records answering the same name is an error, never a guess between them.
+//! Unknown keys are ignored so that a later version can add some without
+//! breaking readers, which is the opposite of the fleet document's rule: a TXT
+//! record is never written back.
 //!
 //! Discovery is the lowest layer. A flag, an environment variable or a config
 //! file that names an endpoint wins, and is not combined with a discovered
@@ -28,7 +31,7 @@ use hickory_resolver::TokioResolver;
 use hickory_resolver::net::{DnsError, NetError};
 use hickory_resolver::proto::rr::RData;
 
-use crate::s3::Endpoint;
+use crate::s3::{DEFAULT_REGION, Endpoint};
 
 /// The record version this crate understands.
 const VERSION_TAG: &str = "v=s3-fleet1";
@@ -165,7 +168,7 @@ pub async fn discover_with(
     })
 }
 
-/// Parse `v=s3-fleet1 endpoint=... region=...`.
+/// Parse `v=s3-fleet1 endpoint=... [region=...]`.
 pub fn parse_record(text: &str) -> Result<Endpoint, String> {
     let mut fields = text.split_ascii_whitespace();
     match fields.next() {
@@ -200,7 +203,7 @@ pub fn parse_record(text: &str) -> Result<Endpoint, String> {
     }
     Ok(Endpoint {
         authority: endpoint.ok_or("no endpoint=")?,
-        region: region.ok_or("no region=")?,
+        region: region.unwrap_or_else(|| DEFAULT_REGION.to_string()),
     })
 }
 
@@ -214,6 +217,8 @@ mod tests {
             parse_record("v=s3-fleet1 endpoint=[2001:db8::1]:7480 region=test future=x").unwrap();
         assert_eq!(e.authority, "[2001:db8::1]:7480");
         assert_eq!(e.region, "test");
+        let e = parse_record("v=s3-fleet1 endpoint=s3.example").unwrap();
+        assert_eq!(e.region, DEFAULT_REGION);
     }
 
     #[test]
@@ -223,7 +228,6 @@ mod tests {
             ("endpoint=e region=r", "no version first"),
             ("v=s3-fleet2 endpoint=e region=r", "unknown version"),
             ("v=s3-fleet1 region=r", "no endpoint"),
-            ("v=s3-fleet1 endpoint=e", "no region"),
             ("v=s3-fleet1 endpoint=e endpoint=f region=r", "repeated key"),
             ("v=s3-fleet1 endpoint= region=r", "empty value"),
             ("v=s3-fleet1 endpoint=e region=r junk", "not key=value"),

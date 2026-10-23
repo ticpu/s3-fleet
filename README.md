@@ -27,11 +27,11 @@ s3-fleet ssh sbc1.example.net uptime
 A fleet name is a bucket name, and the endpoint comes from DNS. For fleet `prod-sbc`, `_s3-fleet.prod-sbc` is looked up first, then `_s3-fleet`, both as relative names, so the resolver's search list applies:
 
 ```
-_s3-fleet           IN TXT "v=s3-fleet1 endpoint=s3.example.net region=default"
-_s3-fleet.prod-sbc  IN TXT "v=s3-fleet1 endpoint=s3-prod.example.net:7480 region=prod"
+_s3-fleet           IN TXT "v=s3-fleet1 endpoint=s3.example.net"
+_s3-fleet.prod-sbc  IN TXT "v=s3-fleet1 endpoint=s3-prod.example.net:7480 region=eu-west-3"
 ```
 
-`endpoint` is `host[:port]` (brackets around an IPv6 literal), spoken over HTTPS with path-style requests; `region` is the signing region (radosgw's zonegroup api_name). `--endpoint` with `--region`, `S3_FLEET_ENDPOINT` with `S3_FLEET_REGION`, or a config file override discovery.
+`endpoint` is `host[:port]` (brackets around an IPv6 literal), spoken over HTTPS with path-style requests. `region` is optional and defaults to `us-east-1`. It only enters the SigV4 signature and bucket creation's location constraint: AWS and MinIO check it, radosgw accepts any value, and with the default `init` creates the bucket in radosgw's default zonegroup. `--endpoint` (`S3_FLEET_ENDPOINT`), optionally with `--region` (`S3_FLEET_REGION`), or a config file overrides discovery.
 
 ## Configuration
 
@@ -39,7 +39,6 @@ Optional. `/etc/s3-fleet.yaml`, then `$XDG_CONFIG_HOME/s3-fleet.yaml`, the later
 
 ```yaml
 endpoint: s3.example.net
-region: default
 credentials:
   default:
     access_key: ...

@@ -37,6 +37,15 @@
 //! The endpoint is an authority (`host[:port]`, a bracketed IPv6 literal
 //! allowed) used verbatim in the URL and the signed Host header, never parsed.
 //! Requests are path-style: `https://<endpoint>/<bucket>/<key>`.
+//!
+//! # Region
+//!
+//! The region enters only the SigV4 credential scope and, on bucket creation,
+//! the `LocationConstraint`. AWS and MinIO reject a scope naming another
+//! region; radosgw recomputes the signature with whatever region the client
+//! sent and accepts any. radosgw does compare a `LocationConstraint` with its
+//! zonegroups' api_names, which is why [`DEFAULT_REGION`] sends none and the
+//! bucket lands in the default zonegroup.
 
 use std::fmt;
 use std::time::{Duration, Instant, SystemTime};
@@ -65,12 +74,16 @@ const KEY_ENCODE: &AsciiSet = &NON_ALPHANUMERIC
 /// not flood stderr.
 const ERROR_BODY_CAP: usize = 1024;
 
+/// The region signed for when none is configured: SigV4's convention for
+/// "no region", and the one for which bucket creation sends no constraint.
+pub const DEFAULT_REGION: &str = "us-east-1";
+
 /// Where an S3 service is and which region requests are signed for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Endpoint {
     /// `host[:port]`, a bracketed IPv6 literal allowed; used verbatim.
     pub authority: String,
-    /// Signing region; radosgw calls it the zonegroup's api_name.
+    /// Signing region; usually [`DEFAULT_REGION`] outside AWS.
     pub region: String,
 }
 
@@ -657,7 +670,7 @@ fn etag(resp: &reqwest::Response) -> Option<String> {
 /// AWS rejects a LocationConstraint of us-east-1, its default region, and
 /// requires one everywhere else; radosgw checks it against the zonegroup.
 fn create_bucket_body(region: &str) -> Vec<u8> {
-    if region == "us-east-1" {
+    if region == DEFAULT_REGION {
         return Vec::new();
     }
     format!(
