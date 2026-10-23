@@ -10,6 +10,7 @@
 #![allow(dead_code)]
 
 pub mod cli;
+pub mod netns;
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

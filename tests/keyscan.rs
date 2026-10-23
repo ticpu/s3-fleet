@@ -2,13 +2,12 @@
 //! resolve, a closed port and a blackholed address. Skipped where ssh-keyscan
 //! is missing; the localhost case is skipped when no sshd answers.
 //!
-//! The resolver-down case re-runs this test binary under `unshare -rn`, a
-//! network namespace with no interface up, where the DNS server cannot be
-//! reached. It is skipped where unprivileged user namespaces are refused, and
-//! where names still resolve without the network (systemd-resolved reached
-//! through nss-resolve's unix socket).
+//! The resolver-down case runs with the network gone (common::netns). It is
+//! skipped where names still resolve without the network (systemd-resolved
+//! reached through nss-resolve's unix socket).
 
-use std::process::Command;
+mod common;
+
 use std::time::Duration;
 
 use s3_fleet::keyscan::{KeyscanError, KeyscanOptions, keyscan};
@@ -56,55 +55,22 @@ async fn invalid_tld_is_a_resolution_failure() {
     );
 }
 
-const IN_NETNS: &str = "S3_FLEET_TEST_IN_NETNS";
-
 #[tokio::test]
 async fn unreachable_resolver_is_not_a_missing_name() {
-    if std::env::var_os(IN_NETNS).is_some() {
-        if !have_keyscan() {
-            return;
-        }
-        match keyscan("example.com", &KeyscanOptions::default()).await {
-            Err(KeyscanError::ResolverFailure { .. }) => {}
-            Err(KeyscanError::NoKeys { .. }) => {
-                eprintln!("skipped: names resolve without the network here")
-            }
-            other => panic!("{other:?}"),
-        }
+    if !common::netns::inside() {
+        common::netns::rerun("unreachable_resolver_is_not_a_missing_name");
         return;
     }
-    // Not confined yet: landlock would refuse unshare its write to
-    // /proc/self/uid_map. The child confines itself.
-    let exe = std::env::current_exe().unwrap();
-    let output = Command::new("unshare")
-        .arg("-rn")
-        .arg(exe)
-        .args([
-            "--exact",
-            "unreachable_resolver_is_not_a_missing_name",
-            "--nocapture",
-        ])
-        .env(IN_NETNS, "1")
-        .output()
-        .expect("run unshare");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if !output
-        .status
-        .success()
-        && stderr.starts_with("unshare:")
-    {
-        eprintln!("skipped: no user namespace: {stderr}");
+    if !have_keyscan() {
         return;
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output
-            .status
-            .success(),
-        "in the namespace:\n{stdout}\n{stderr}"
-    );
-    assert!(stdout.contains("1 passed"), "{stdout}");
-    eprint!("{stderr}");
+    match keyscan("example.com", &KeyscanOptions::default()).await {
+        Err(KeyscanError::ResolverFailure { .. }) => {}
+        Err(KeyscanError::NoKeys { .. }) => {
+            eprintln!("skipped: names resolve without the network here")
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 #[tokio::test]

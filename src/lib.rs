@@ -33,6 +33,7 @@ pub mod doc;
 pub mod fleet;
 pub mod keyscan;
 pub mod known_hosts;
+pub mod lookup;
 pub mod s3;
 pub mod selector;
 
