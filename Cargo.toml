@@ -10,6 +10,7 @@ readme = "README.md"
 keywords = ["ssh", "s3", "fleet", "known-hosts", "inventory"]
 categories = ["command-line-utilities", "network-programming"]
 authors = ["Jérôme Poulin <jeromepoulin@gmail.com>"]
+include = ["src/**", "tests/**", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
 
 [features]
 default = ["cli"]
