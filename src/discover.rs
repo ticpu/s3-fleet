@@ -1,14 +1,18 @@
-//! Finding a fleet's S3 endpoint and region from DNS.
+//! Finding a fleet's S3 endpoint, region and bucket from DNS.
 //!
 //! The record is a TXT record:
 //!
 //! ```text
-//! _s3-fleet.prod-sbc  IN TXT "v=s3-fleet1 endpoint=s3-prod.example.net region=prod"
+//! _s3-fleet.prod-sbc  IN TXT "v=s3-fleet1 endpoint=s3.amazonaws.com region=eu-west-3 bucket=acme-prod-sbc"
 //! _s3-fleet           IN TXT "v=s3-fleet1 endpoint=s3.example.net"
 //! ```
 //!
 //! `region` is optional and defaults to [`DEFAULT_REGION`]; the S3 client's
-//! notes say when it matters.
+//! notes say when it matters. `bucket` is optional too, and the bucket is
+//! then the fleet name; it exists because bucket names are global on AWS,
+//! where a short fleet name is rarely free. It is refused in the shared
+//! `_s3-fleet` record, which answers for every fleet without a record of its
+//! own and would point them all at one bucket.
 //!
 //! For fleet `<f>`, `_s3-fleet.<f>` is queried first, then `_s3-fleet`. The
 //! per-fleet name lets fleets live on different clusters; the bare one serves
@@ -31,6 +35,7 @@ use hickory_resolver::TokioResolver;
 use hickory_resolver::net::{DnsError, NetError};
 use hickory_resolver::proto::rr::RData;
 
+use crate::fleet::is_valid_name;
 use crate::s3::{DEFAULT_REGION, Endpoint};
 
 /// The record version this crate understands.
@@ -42,6 +47,9 @@ const VERSION_PREFIX: &str = "v=s3-fleet";
 pub struct Discovered {
     /// Endpoint and region from the record.
     pub endpoint: Endpoint,
+    /// The bucket, from a per-fleet record's `bucket=`; `None` means the
+    /// fleet name.
+    pub bucket: Option<String>,
     /// The fully-qualified name that answered.
     pub record: String,
 }
@@ -107,7 +115,11 @@ pub async fn discover_with(
     fleet: &str,
 ) -> Result<Discovered, DiscoverError> {
     let names = record_names(fleet);
-    for name in &names {
+    for (i, name) in names
+        .iter()
+        .enumerate()
+    {
+        let shared = i > 0;
         let lookup = match resolver
             .txt_lookup(name.as_str())
             .await
@@ -143,13 +155,26 @@ pub async fn discover_with(
         match found.as_slice() {
             [] => continue,
             [(answered, text)] => {
-                let endpoint = parse_record(text).map_err(|reason| DiscoverError::Record {
+                let invalid = |reason| DiscoverError::Record {
                     name: answered.clone(),
                     text: text.clone(),
                     reason,
-                })?;
+                };
+                let record = parse_record(text).map_err(invalid)?;
+                if shared
+                    && record
+                        .bucket
+                        .is_some()
+                {
+                    return Err(invalid(
+                        "bucket= belongs in a per-fleet record (_s3-fleet.<fleet>); here it would \
+                         name the bucket of every fleet"
+                            .to_string(),
+                    ));
+                }
                 return Ok(Discovered {
-                    endpoint,
+                    endpoint: record.endpoint,
+                    bucket: record.bucket,
                     record: answered.clone(),
                 });
             }
@@ -168,8 +193,17 @@ pub async fn discover_with(
     })
 }
 
-/// Parse `v=s3-fleet1 endpoint=... [region=...]`.
-pub fn parse_record(text: &str) -> Result<Endpoint, String> {
+/// What one record says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Record {
+    /// Endpoint, and region or its default.
+    pub endpoint: Endpoint,
+    /// `bucket=`, when the fleet's bucket is not named after it.
+    pub bucket: Option<String>,
+}
+
+/// Parse `v=s3-fleet1 endpoint=... [region=...] [bucket=...]`.
+pub fn parse_record(text: &str) -> Result<Record, String> {
     let mut fields = text.split_ascii_whitespace();
     match fields.next() {
         Some(VERSION_TAG) => {}
@@ -182,6 +216,7 @@ pub fn parse_record(text: &str) -> Result<Endpoint, String> {
     }
     let mut endpoint = None;
     let mut region = None;
+    let mut bucket = None;
     for field in fields {
         let Some((key, value)) = field.split_once('=') else {
             return Err(format!("{field:?} is not key=value"));
@@ -189,6 +224,7 @@ pub fn parse_record(text: &str) -> Result<Endpoint, String> {
         let slot = match key {
             "endpoint" => &mut endpoint,
             "region" => &mut region,
+            "bucket" => &mut bucket,
             _ => continue,
         };
         if value.is_empty() {
@@ -201,9 +237,19 @@ pub fn parse_record(text: &str) -> Result<Endpoint, String> {
             return Err(format!("{key} given twice"));
         }
     }
-    Ok(Endpoint {
-        authority: endpoint.ok_or("no endpoint=")?,
-        region: region.unwrap_or_else(|| DEFAULT_REGION.to_string()),
+    if let Some(bucket) = &bucket
+        && !is_valid_name(bucket)
+    {
+        return Err(format!(
+            "bucket {bucket:?} is not 3 to 63 of a-z 0-9 -, starting and ending with a letter or digit"
+        ));
+    }
+    Ok(Record {
+        endpoint: Endpoint {
+            authority: endpoint.ok_or("no endpoint=")?,
+            region: region.unwrap_or_else(|| DEFAULT_REGION.to_string()),
+        },
+        bucket,
     })
 }
 
@@ -213,12 +259,30 @@ mod tests {
 
     #[test]
     fn parses_a_record() {
-        let e =
+        let r =
             parse_record("v=s3-fleet1 endpoint=[2001:db8::1]:7480 region=test future=x").unwrap();
-        assert_eq!(e.authority, "[2001:db8::1]:7480");
-        assert_eq!(e.region, "test");
-        let e = parse_record("v=s3-fleet1 endpoint=s3.example").unwrap();
-        assert_eq!(e.region, DEFAULT_REGION);
+        assert_eq!(
+            r.endpoint
+                .authority,
+            "[2001:db8::1]:7480"
+        );
+        assert_eq!(
+            r.endpoint
+                .region,
+            "test"
+        );
+        assert_eq!(r.bucket, None);
+        let r = parse_record("v=s3-fleet1 endpoint=s3.example bucket=acme-odf-prod").unwrap();
+        assert_eq!(
+            r.endpoint
+                .region,
+            DEFAULT_REGION
+        );
+        assert_eq!(
+            r.bucket
+                .as_deref(),
+            Some("acme-odf-prod")
+        );
     }
 
     #[test]
@@ -231,6 +295,8 @@ mod tests {
             ("v=s3-fleet1 endpoint=e endpoint=f region=r", "repeated key"),
             ("v=s3-fleet1 endpoint= region=r", "empty value"),
             ("v=s3-fleet1 endpoint=e region=r junk", "not key=value"),
+            ("v=s3-fleet1 endpoint=e bucket=Acme_Odf", "invalid bucket"),
+            ("v=s3-fleet1 endpoint=e bucket=a.b.c", "dotted bucket"),
         ] {
             assert!(parse_record(text).is_err(), "{why}: {text:?} accepted");
         }

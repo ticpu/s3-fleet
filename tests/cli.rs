@@ -269,3 +269,47 @@ fn sandbox_refuses_writes_outside_the_build_directory() {
         "a sandboxed test wrote outside target/: the confinement is not in force"
     );
 }
+
+#[test]
+fn bucket_flag_decouples_the_bucket_from_the_fleet_name() {
+    let Some(live) = common::live("bucket_flag_decouples_the_bucket_from_the_fleet_name") else {
+        return;
+    };
+    let sb = Sandbox::new();
+    let (code, out, err) = run(&mut sb.cmd(&[
+        "-f",
+        "renamed-fleet",
+        "--bucket",
+        &live.bucket,
+        "--endpoint",
+        &live
+            .endpoint
+            .authority,
+        "list",
+        "--json",
+    ]));
+    assert_eq!(code, 0, "{err}");
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(json["fleet"], "renamed-fleet");
+    assert_eq!(
+        json["bucket"],
+        live.bucket
+            .as_str()
+    );
+    assert!(
+        sb.cache_file("renamed-fleet")
+            .exists(),
+        "the cache is keyed by fleet name, not bucket"
+    );
+
+    let (code, _, err) = run(&mut sb.cmd(&[
+        "-f",
+        "fleet",
+        "--bucket",
+        "Bad.Bucket",
+        "--endpoint",
+        "x",
+        "list",
+    ]));
+    assert_eq!(code, 2, "{err}");
+}

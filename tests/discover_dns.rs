@@ -50,6 +50,8 @@ fn dnsmasq() -> Option<(Dnsmasq, u16)> {
             "--txt-record=_s3-fleet.site.test,unrelated text",
             "--txt-record=_s3-fleet.dup.test,v=s3-fleet1 endpoint=a region=a",
             "--txt-record=_s3-fleet.dup.test,v=s3-fleet1 endpoint=b region=b",
+            "--txt-record=_s3-fleet.odf.aws.test,v=s3-fleet1 endpoint=s3.aws.test bucket=acme-odf-prod",
+            "--txt-record=_s3-fleet.aws.test,v=s3-fleet1 endpoint=s3.aws.test bucket=acme-everything",
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -151,5 +153,36 @@ async fn two_records_are_ambiguous() {
     assert!(
         matches!(err, Err(DiscoverError::Ambiguous { count: 2, .. })),
         "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn per_fleet_record_names_the_bucket_shared_record_may_not() {
+    let Some((_dns, port)) = dnsmasq() else {
+        return;
+    };
+    let r = resolver(port, &["aws.test"]);
+    let odf = discover_with(&r, "odf")
+        .await
+        .unwrap();
+    assert_eq!(
+        odf.bucket
+            .as_deref(),
+        Some("acme-odf-prod")
+    );
+
+    let err = discover_with(&r, "other").await;
+    assert!(
+        matches!(&err, Err(DiscoverError::Record { reason, .. }) if reason.contains("per-fleet")),
+        "a shared record naming one bucket for every fleet: {err:?}"
+    );
+
+    let site = resolver(port, &["site.test"]);
+    let plain = discover_with(&site, "prod")
+        .await
+        .unwrap();
+    assert_eq!(
+        plain.bucket, None,
+        "no bucket=, the bucket is the fleet name"
     );
 }

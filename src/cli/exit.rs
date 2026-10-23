@@ -132,7 +132,7 @@ fn decide(cause: &(dyn std::error::Error + 'static)) -> Option<Exit> {
 
 fn fleet_error(e: &Error) -> Exit {
     match e {
-        Error::InvalidFleetName { .. } => Exit::Usage,
+        Error::InvalidFleetName { .. } | Error::InvalidBucketName { .. } => Exit::Usage,
         Error::NotFound { .. } => Exit::NotFound,
         Error::Forbidden { source, .. } => s3_error(source),
         Error::Conflict { .. } => Exit::Conflict,

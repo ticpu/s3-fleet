@@ -6,7 +6,9 @@
 //! `--config PATH` replaces both files with that one, so a run can be isolated
 //! from the machine's. The endpoint and region resolve as a pair from the
 //! highest layer that sets an endpoint, so a file's region is never signed
-//! against DNS's endpoint.
+//! against DNS's endpoint. The bucket is `--bucket`, else the per-fleet
+//! record's `bucket=` when the endpoint was discovered, else the fleet name;
+//! the local cache is keyed by fleet name either way.
 //!
 //! Credentials resolve first-wins by whole keypair: the AWS environment pair,
 //! then `credentials.<fleet>` from any file, then `credentials.default`, each
@@ -33,12 +35,12 @@ use clap::{Parser, Subcommand};
 use clap_complete::ArgValueCandidates;
 use s3_fleet::cache::Cache;
 use s3_fleet::discover::DiscoverError;
-use s3_fleet::s3::{Endpoint, S3};
+use s3_fleet::s3::S3;
 use s3_fleet::selector::Selector;
 use s3_fleet::{Error, Fleet, FleetDoc};
 use tracing::{debug, warn};
 
-use config::{EndpointSource, Layer};
+use config::{Layer, Target};
 use exit::{Exit, Failure};
 
 #[derive(Parser)]
@@ -56,6 +58,9 @@ pub struct Cli {
     /// S3 signing region, with --endpoint [default: us-east-1]
     #[arg(long, env = "S3_FLEET_REGION", global = true)]
     pub region: Option<String>,
+    /// Bucket holding the fleet, over a DNS record's bucket= [default: the fleet name]
+    #[arg(long, env = "S3_FLEET_BUCKET", global = true)]
+    pub bucket: Option<String>,
     /// Use only this config file instead of /etc and XDG ones
     #[arg(long, global = true)]
     pub config: Option<PathBuf>,
@@ -188,7 +193,8 @@ pub enum Source {
 pub struct Read {
     pub doc: FleetDoc,
     pub source: Source,
-    pub endpoint: Option<(Endpoint, EndpointSource)>,
+    /// Where it was read; unknown for a cached copy.
+    pub target: Option<Target>,
 }
 
 /// The resolved global options, shared by every command.
@@ -196,6 +202,7 @@ pub struct Ctx {
     pub fleet: String,
     endpoint: Option<String>,
     region: Option<String>,
+    bucket: Option<String>,
     layers: Vec<Layer>,
     allow_stale: bool,
     timeout: Duration,
@@ -216,6 +223,9 @@ impl Ctx {
             region: cli
                 .region
                 .clone(),
+            bucket: cli
+                .bucket
+                .clone(),
             layers: config::load_layers(
                 cli.config
                     .as_deref(),
@@ -229,33 +239,48 @@ impl Ctx {
         self.timeout
     }
 
-    pub async fn endpoint(&self) -> anyhow::Result<(Endpoint, EndpointSource)> {
-        let (endpoint, source) = config::resolve_endpoint(
+    pub async fn target(&self) -> anyhow::Result<Target> {
+        let target = config::resolve_target(
             self.endpoint
                 .as_deref(),
             self.region
+                .as_deref(),
+            self.bucket
                 .as_deref(),
             &self.layers,
             &self.fleet,
         )
         .await?;
         debug!(
-            "endpoint {} region {} from {source}",
-            endpoint.authority, endpoint.region
+            "endpoint {} region {} bucket {} from {}",
+            target
+                .endpoint
+                .authority,
+            target
+                .endpoint
+                .region,
+            target.bucket,
+            target.source
         );
-        Ok((endpoint, source))
+        Ok(target)
     }
 
     /// A fleet handle; signed when credentials resolve, else anonymous.
-    pub fn handle(&self, endpoint: &Endpoint) -> anyhow::Result<Fleet> {
+    pub fn handle(&self, target: &Target) -> anyhow::Result<Fleet> {
         let credentials = config::resolve_credentials(&self.layers, &self.fleet)?;
-        let s3 = S3::new(endpoint.clone(), credentials, self.timeout)?;
-        Ok(Fleet::new(&self.fleet, s3)?)
+        let s3 = S3::new(
+            target
+                .endpoint
+                .clone(),
+            credentials,
+            self.timeout,
+        )?;
+        Ok(Fleet::with_bucket(&self.fleet, &target.bucket, s3)?)
     }
 
     /// Like `handle`, but fails before any work when there are no credentials.
-    pub fn writer(&self, endpoint: &Endpoint) -> anyhow::Result<Fleet> {
-        let fleet = self.handle(endpoint)?;
+    pub fn writer(&self, target: &Target) -> anyhow::Result<Fleet> {
+        let fleet = self.handle(target)?;
         if !fleet
             .s3()
             .has_credentials()
@@ -277,12 +302,12 @@ impl Ctx {
             .read_live()
             .await
         {
-            Ok((doc, endpoint)) => {
+            Ok((doc, target)) => {
                 self.store(&doc);
                 return Ok(Read {
                     doc,
                     source: Source::S3,
-                    endpoint: Some(endpoint),
+                    target: Some(target),
                 });
             }
             Err(err) if self.allow_stale && is_unreachable(&err) => err,
@@ -311,19 +336,19 @@ impl Ctx {
         Ok(Read {
             doc: cached.doc,
             source: Source::Cache { age: cached.age },
-            endpoint: None,
+            target: None,
         })
     }
 
-    async fn read_live(&self) -> anyhow::Result<(FleetDoc, (Endpoint, EndpointSource))> {
-        let endpoint = self
-            .endpoint()
+    async fn read_live(&self) -> anyhow::Result<(FleetDoc, Target)> {
+        let target = self
+            .target()
             .await?;
         let snapshot = self
-            .handle(&endpoint.0)?
+            .handle(&target)?
             .load()
             .await?;
-        Ok((snapshot.doc, endpoint))
+        Ok((snapshot.doc, target))
     }
 
     pub fn cache(&self) -> anyhow::Result<Cache> {

@@ -13,12 +13,14 @@
 //! S3 failures are sorted into the [`Error`] variants a caller acts on
 //! differently: absent, forbidden, conflict, unreachable, no credentials.
 //!
-//! The fleet name is the bucket name, restricted to 3 to 63 characters of
-//! `[a-z0-9-]`, starting and ending with a letter or digit: a valid bucket name
-//! on every S3 implementation, with no dot to break TLS on virtual-hosted
-//! endpoints, and safe to put in a shell command unquoted (the ssh wrapper
-//! relies on that). It is checked before any request, so a typo fails here and
-//! not as an S3 error about some bucket.
+//! The bucket is the fleet name unless the caller names another, which AWS
+//! needs: bucket names are global there. Fleet and bucket names follow one
+//! rule, 3 to 63 characters of `[a-z0-9-]` starting and ending with a letter
+//! or digit: a valid bucket name on every S3 implementation, with no dot to
+//! break TLS on virtual-hosted endpoints, and safe to put in a shell command
+//! unquoted (the ssh wrapper relies on that for the fleet name). Both are
+//! checked before any request, so a typo fails here and not as an S3 error
+//! about some bucket.
 
 use crate::Error;
 use crate::doc::FleetDoc;
@@ -46,26 +48,44 @@ pub enum Init {
     AlreadyExists,
 }
 
-/// One fleet: a bucket named after it, reached through an [`S3`] client.
+/// One fleet: its bucket, reached through an [`S3`] client.
 #[derive(Clone, Debug)]
 pub struct Fleet {
     name: String,
+    bucket: String,
     s3: S3,
 }
 
 impl Fleet {
-    /// A handle on fleet `name`; the name is checked, nothing is fetched.
+    /// A handle on fleet `name`, in the bucket of the same name; the name is
+    /// checked, nothing is fetched.
     pub fn new(name: &str, s3: S3) -> Result<Self, Error> {
+        Self::with_bucket(name, name, s3)
+    }
+
+    /// A handle on fleet `name` kept in `bucket`.
+    pub fn with_bucket(name: &str, bucket: &str, s3: S3) -> Result<Self, Error> {
         validate_fleet_name(name)?;
+        if !is_valid_name(bucket) {
+            return Err(Error::InvalidBucketName {
+                name: bucket.to_string(),
+            });
+        }
         Ok(Self {
             name: name.to_string(),
+            bucket: bucket.to_string(),
             s3,
         })
     }
 
-    /// The fleet's name, which is also its bucket.
+    /// The fleet's name.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The bucket holding the fleet.
+    pub fn bucket(&self) -> &str {
+        &self.bucket
     }
 
     /// The S3 client, for callers keeping objects of their own in the bucket.
@@ -77,7 +97,7 @@ impl Fleet {
     /// An existing document is never overwritten.
     pub async fn init(&self) -> Result<Init, Error> {
         self.s3
-            .create_bucket(&self.name)
+            .create_bucket(&self.bucket)
             .await
             .map_err(|e| self.classify(e))?;
         let body = FleetDoc::new()
@@ -86,7 +106,7 @@ impl Fleet {
         match self
             .s3
             .put_object(
-                &self.name,
+                &self.bucket,
                 DOCUMENT_KEY,
                 body,
                 CONTENT_TYPE,
@@ -104,7 +124,7 @@ impl Fleet {
     pub async fn load(&self) -> Result<Snapshot, Error> {
         let object = self
             .s3
-            .get_object(&self.name, DOCUMENT_KEY)
+            .get_object(&self.bucket, DOCUMENT_KEY)
             .await
             .map_err(|e| self.classify(e))?;
         let etag = object
@@ -132,7 +152,7 @@ impl Fleet {
         match self
             .s3
             .put_object(
-                &self.name,
+                &self.bucket,
                 DOCUMENT_KEY,
                 body,
                 CONTENT_TYPE,
@@ -180,20 +200,24 @@ impl Fleet {
 
 /// See the notes above: a bucket name, shell-safe, with no dot.
 pub fn validate_fleet_name(name: &str) -> Result<(), Error> {
-    let bytes = name.as_bytes();
-    let edge = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();
-    let valid = (3..=63).contains(&bytes.len())
-        && bytes
-            .iter()
-            .all(|&b| edge(b) || b == b'-')
-        && edge(bytes[0])
-        && edge(bytes[bytes.len() - 1]);
-    if !valid {
+    if !is_valid_name(name) {
         return Err(Error::InvalidFleetName {
             name: name.to_string(),
         });
     }
     Ok(())
+}
+
+/// The rule fleet and bucket names share.
+pub(crate) fn is_valid_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    let edge = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();
+    (3..=63).contains(&bytes.len())
+        && bytes
+            .iter()
+            .all(|&b| edge(b) || b == b'-')
+        && edge(bytes[0])
+        && edge(bytes[bytes.len() - 1])
 }
 
 #[cfg(test)]

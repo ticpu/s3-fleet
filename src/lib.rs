@@ -1,11 +1,11 @@
 //! A fleet of SSH hosts kept as one YAML document in an S3 bucket: each host's
 //! pinned host keys and free-form labels, plus fleet-wide attributes.
 //!
-//! One bucket holds one fleet, and the bucket is named after the fleet. A
-//! reader needs nothing but the fleet name: [`discover`] finds the endpoint
-//! through a DNS TXT record, and the document is world-readable, so listing
-//! hosts or exporting their keys works anonymously. Writing takes S3
-//! credentials.
+//! One bucket holds one fleet, named after it unless a per-fleet DNS record
+//! or the caller names another. A reader needs nothing but the fleet name:
+//! [`discover`] finds the endpoint (and bucket) through a DNS TXT record, and
+//! the document is world-readable, so listing hosts or exporting their keys
+//! works anonymously. Writing takes S3 credentials.
 //!
 //! # Model
 //!
@@ -51,6 +51,14 @@ pub enum Error {
         "invalid fleet name {name:?}: 3 to 63 of a-z 0-9 -, starting and ending with a letter or digit"
     )]
     InvalidFleetName {
+        /// The name.
+        name: String,
+    },
+    /// The bucket name breaks the fleet-name rule.
+    #[error(
+        "invalid bucket name {name:?}: 3 to 63 of a-z 0-9 -, starting and ending with a letter or digit"
+    )]
+    InvalidBucketName {
         /// The name.
         name: String,
     },

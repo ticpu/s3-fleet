@@ -148,13 +148,42 @@ pub fn check_mode(path: &Path, mode: u32) -> Result<(), ConfigError> {
     Ok(())
 }
 
-/// The endpoint from the highest layer naming one, else from DNS.
-pub async fn resolve_endpoint(
+/// Where a fleet lives: endpoint, where that came from, and bucket.
+#[derive(Clone, Debug)]
+pub struct Target {
+    pub endpoint: Endpoint,
+    pub source: EndpointSource,
+    pub bucket: String,
+}
+
+/// The endpoint from the highest layer naming one, else from DNS. The
+/// bucket is `bucket` if given, else a per-fleet record's `bucket=` when the
+/// endpoint was discovered, else the fleet name.
+pub async fn resolve_target(
+    endpoint: Option<&str>,
+    region: Option<&str>,
+    bucket: Option<&str>,
+    layers: &[Layer],
+    fleet: &str,
+) -> anyhow::Result<Target> {
+    let (endpoint, source, discovered) = resolve_endpoint(endpoint, region, layers, fleet).await?;
+    let bucket = bucket
+        .map(str::to_string)
+        .or(discovered)
+        .unwrap_or_else(|| fleet.to_string());
+    Ok(Target {
+        endpoint,
+        source,
+        bucket,
+    })
+}
+
+async fn resolve_endpoint(
     endpoint: Option<&str>,
     region: Option<&str>,
     layers: &[Layer],
     fleet: &str,
-) -> anyhow::Result<(Endpoint, EndpointSource)> {
+) -> anyhow::Result<(Endpoint, EndpointSource, Option<String>)> {
     if let Some(authority) = endpoint {
         return Ok((
             Endpoint {
@@ -164,6 +193,7 @@ pub async fn resolve_endpoint(
                     .to_string(),
             },
             EndpointSource::CommandLine,
+            None,
         ));
     }
     if region.is_some() {
@@ -206,12 +236,17 @@ pub async fn resolve_endpoint(
                     .path
                     .clone(),
             ),
+            None,
         ));
     }
     let found = discover::discover(fleet)
         .await
         .map_err(|e: DiscoverError| anyhow::Error::new(e).context("discover the S3 endpoint"))?;
-    Ok((found.endpoint, EndpointSource::Dns(found.record)))
+    Ok((
+        found.endpoint,
+        EndpointSource::Dns(found.record),
+        found.bucket,
+    ))
 }
 
 /// The AWS environment pair, else the most specific entry in the files:
@@ -323,29 +358,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bucket_is_the_flag_else_the_fleet() {
+        let layers = [layer("/home", "endpoint: s3\n")];
+        let t = resolve_target(None, None, None, &layers, "odf-prod")
+            .await
+            .unwrap();
+        assert_eq!(t.bucket, "odf-prod");
+        let t = resolve_target(None, None, Some("acme-odf-prod"), &layers, "odf-prod")
+            .await
+            .unwrap();
+        assert_eq!(t.bucket, "acme-odf-prod");
+    }
+
+    #[tokio::test]
     async fn endpoint_layers() {
         let layers = [
             layer("/etc", "endpoint: etc.s3\nregion: e\n"),
             layer("/home", "endpoint: home.s3\nregion: h\n"),
         ];
-        let (e, src) = resolve_endpoint(None, None, &layers, "f")
+        let (e, src, _) = resolve_endpoint(None, None, &layers, "f")
             .await
             .unwrap();
         assert_eq!(e.authority, "home.s3");
         assert!(matches!(src, EndpointSource::File(p) if p == Path::new("/home")));
 
-        let (e, src) = resolve_endpoint(Some("[::1]:7480"), Some("r"), &layers, "f")
+        let (e, src, _) = resolve_endpoint(Some("[::1]:7480"), Some("r"), &layers, "f")
             .await
             .unwrap();
         assert_eq!(e.authority, "[::1]:7480");
         assert!(matches!(src, EndpointSource::CommandLine));
 
-        let (e, _) = resolve_endpoint(Some("x"), None, &layers, "f")
+        let (e, _, _) = resolve_endpoint(Some("x"), None, &layers, "f")
             .await
             .unwrap();
         assert_eq!(e.region, DEFAULT_REGION, "flag endpoint, default region");
         let bare = [layer("/home", "endpoint: x\n")];
-        let (e, _) = resolve_endpoint(None, None, &bare, "f")
+        let (e, _, _) = resolve_endpoint(None, None, &bare, "f")
             .await
             .unwrap();
         assert_eq!(e.region, DEFAULT_REGION, "file endpoint, default region");

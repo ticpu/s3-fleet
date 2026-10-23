@@ -44,6 +44,7 @@ struct FleetJson<'a> {
     fleet: &'a str,
     endpoint: Option<&'a str>,
     endpoint_source: Option<String>,
+    bucket: Option<&'a str>,
     source: &'static str,
     age_secs: Option<u64>,
     attributes: &'a BTreeMap<String, String>,
@@ -59,20 +60,25 @@ fn print_json<'a>(
         Source::S3 => ("s3", None),
         Source::Cache { age } => ("cache", Some(age.as_secs())),
     };
+    let target = read
+        .target
+        .as_ref();
     let out = FleetJson {
         format: FORMAT,
         fleet: &ctx.fleet,
-        endpoint: read
-            .endpoint
-            .as_ref()
-            .map(|(e, _)| {
-                e.authority
-                    .as_str()
-            }),
-        endpoint_source: read
-            .endpoint
-            .as_ref()
-            .map(|(_, s)| s.to_string()),
+        endpoint: target.map(|t| {
+            t.endpoint
+                .authority
+                .as_str()
+        }),
+        endpoint_source: target.map(|t| {
+            t.source
+                .to_string()
+        }),
+        bucket: target.map(|t| {
+            t.bucket
+                .as_str()
+        }),
         source,
         age_secs,
         attributes: read
@@ -92,23 +98,25 @@ fn print_json<'a>(
 }
 
 pub async fn init(ctx: &Ctx) -> anyhow::Result<Exit> {
-    let (endpoint, _) = ctx
-        .endpoint()
+    let target = ctx
+        .target()
         .await?;
-    let fleet = ctx.writer(&endpoint)?;
-    match fleet
+    let fleet = ctx.writer(&target)?;
+    let what = match fleet
         .init()
         .await?
     {
-        Init::Created => eprintln!(
-            "s3-fleet: fleet {} created on {}",
-            ctx.fleet, endpoint.authority
-        ),
-        Init::AlreadyExists => eprintln!(
-            "s3-fleet: fleet {} already exists on {}",
-            ctx.fleet, endpoint.authority
-        ),
-    }
+        Init::Created => "created",
+        Init::AlreadyExists => "already exists",
+    };
+    eprintln!(
+        "s3-fleet: fleet {} {what} in bucket {} on {}",
+        ctx.fleet,
+        target.bucket,
+        target
+            .endpoint
+            .authority
+    );
     Ok(Exit::Ok)
 }
 
@@ -154,10 +162,10 @@ async fn edit<T>(
     ctx: &Ctx,
     change: impl FnOnce(&mut FleetDoc) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
-    let (endpoint, _) = ctx
-        .endpoint()
+    let target = ctx
+        .target()
         .await?;
-    let fleet = ctx.writer(&endpoint)?;
+    let fleet = ctx.writer(&target)?;
     let snapshot = fleet
         .load()
         .await?;
@@ -236,10 +244,10 @@ pub async fn add(
     for host in hosts {
         validate_host_name(host)?;
     }
-    let (endpoint, _) = ctx
-        .endpoint()
+    let target = ctx
+        .target()
         .await?;
-    ctx.writer(&endpoint)?;
+    ctx.writer(&target)?;
 
     let opts = KeyscanOptions {
         port,

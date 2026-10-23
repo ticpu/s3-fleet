@@ -55,8 +55,9 @@ fn extra_sections() -> Roff {
     section(&mut roff, "DISCOVERY");
     roff.text([
         roman(
-            "A fleet is a bucket named after it. Without --endpoint, S3_FLEET_ENDPOINT or an \
-             endpoint in a config file, the endpoint comes from a DNS TXT record: ",
+            "A fleet lives in one bucket, named after it unless said otherwise. Without \
+             --endpoint, S3_FLEET_ENDPOINT or an endpoint in a config file, the endpoint comes \
+             from a DNS TXT record: ",
         ),
         bold("_s3-fleet.FLEET"),
         roman(" first, then "),
@@ -64,11 +65,14 @@ fn extra_sections() -> Roff {
         roman(", both relative, so the resolver's search list applies. The record reads"),
     ]);
     roff.control("IP", []);
-    roff.text([bold("v=s3-fleet1 endpoint=HOST[:PORT] [region=REGION]")]);
+    roff.text([bold(
+        "v=s3-fleet1 endpoint=HOST[:PORT] [region=REGION] [bucket=BUCKET]",
+    )]);
     roff.control("PP", []);
     roff.text([roman(
-        "The region defaults to us-east-1; radosgw accepts any. Reads are anonymous; \
-         writes need credentials.",
+        "The region defaults to us-east-1; radosgw accepts any. bucket= is accepted only in \
+         the per-fleet record, since the shared one would put every fleet in one bucket; \
+         --bucket overrides it. Reads are anonymous; writes need credentials.",
     )]);
 
     section(&mut roff, "EXIT STATUS");
@@ -81,6 +85,7 @@ fn extra_sections() -> Roff {
         ("S3_FLEET", "the fleet, as --fleet"),
         ("S3_FLEET_ENDPOINT", "the S3 endpoint, as --endpoint"),
         ("S3_FLEET_REGION", "the signing region, as --region"),
+        ("S3_FLEET_BUCKET", "the bucket, as --bucket"),
         (
             "AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN",
             "write credentials; they win over the config files",

@@ -2,7 +2,7 @@
 
 A fleet of SSH hosts kept as one YAML document in an S3 bucket: each host's pinned host keys and labels, plus fleet-wide attributes. A Rust library, and a command-line tool for scripts and people.
 
-- Readers need only the fleet name. The S3 endpoint is found through a DNS TXT record, and the document is world-readable, so listing hosts or exporting their keys needs no credentials.
+- Readers need only the fleet name. The S3 endpoint and bucket are found through a DNS TXT record, and the document is world-readable, so listing hosts or exporting their keys needs no credentials.
 - Host keys are pinned once, with `ssh-keyscan`, and a changed key is refused until someone says `--rekey`.
 - Every write is conditional (`If-Match` on the ETag that was read): two people editing at once never lose each other's change. The second one gets exit code 4 and reruns.
 - `s3-fleet ssh` and the `KnownHostsCommand` mode make ssh trust exactly the pinned keys and nothing else.
@@ -24,14 +24,18 @@ s3-fleet ssh sbc1.example.net uptime
 
 ## Discovery
 
-A fleet name is a bucket name, and the endpoint comes from DNS. For fleet `prod-sbc`, `_s3-fleet.prod-sbc` is looked up first, then `_s3-fleet`, both as relative names, so the resolver's search list applies:
+The endpoint comes from DNS. For fleet `prod-sbc`, `_s3-fleet.prod-sbc` is looked up first, then `_s3-fleet`, both as relative names, so the resolver's search list applies:
 
 ```
 _s3-fleet           IN TXT "v=s3-fleet1 endpoint=s3.example.net"
-_s3-fleet.prod-sbc  IN TXT "v=s3-fleet1 endpoint=s3-prod.example.net:7480 region=eu-west-3"
+_s3-fleet.prod-sbc  IN TXT "v=s3-fleet1 endpoint=s3.amazonaws.com region=eu-west-3 bucket=acme-prod-sbc"
 ```
 
-`endpoint` is `host[:port]` (brackets around an IPv6 literal), spoken over HTTPS with path-style requests. `region` is optional and defaults to `us-east-1`. It only enters the SigV4 signature and bucket creation's location constraint: AWS and MinIO check it, radosgw accepts any value, and with the default `init` creates the bucket in radosgw's default zonegroup. `--endpoint` (`S3_FLEET_ENDPOINT`), optionally with `--region` (`S3_FLEET_REGION`), or a config file overrides discovery.
+- `endpoint` is `host[:port]` (brackets around an IPv6 literal), spoken over HTTPS with path-style requests.
+- `region` is optional and defaults to `us-east-1`. It only enters the SigV4 signature and bucket creation's location constraint: AWS and MinIO check it, radosgw accepts any value, and with the default `init` creates the bucket in radosgw's default zonegroup.
+- `bucket` is optional; the bucket is otherwise the fleet name. Bucket names are global on AWS, where a short fleet name is rarely free. It is accepted only in a per-fleet record: in the shared `_s3-fleet` it would put every fleet in one bucket.
+
+`--endpoint` (`S3_FLEET_ENDPOINT`), optionally with `--region` (`S3_FLEET_REGION`), or a config file overrides discovery; `--bucket` (`S3_FLEET_BUCKET`) overrides the bucket.
 
 ## Configuration
 
@@ -75,10 +79,10 @@ A selector is comma-separated terms, all of which must hold: `k=v`, `k!=v` (abse
 
 - stdout carries only data; diagnostics go to stderr.
 - No command reads stdin or prompts, except `setup`, which refuses to run without a terminal.
-- `--json` output carries `"format": 1`, and its shape changes only with that number:
+- `--json` output carries `"format": 1`. Fields may be added; an existing field changes or goes away only with a new number:
 
 ```json
-{"format":1,"fleet":"prod-sbc","endpoint":"s3.example.net","endpoint_source":"dns _s3-fleet.example.net.","source":"s3","age_secs":null,"attributes":{},"hosts":[{"name":"sbc1.example.net","port":22,"keys":["ssh-ed25519 AAAA..."],"labels":{"env":"prod","role":"sbc"}}]}
+{"format":1,"fleet":"prod-sbc","endpoint":"s3.example.net","endpoint_source":"dns _s3-fleet.example.net.","bucket":"prod-sbc","source":"s3","age_secs":null,"attributes":{},"hosts":[{"name":"sbc1.example.net","port":22,"keys":["ssh-ed25519 AAAA..."],"labels":{"env":"prod","role":"sbc"}}]}
 ```
 
 Exit codes:

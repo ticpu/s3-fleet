@@ -33,16 +33,21 @@ pub async fn run(ctx: &Ctx, config_path: Option<&Path>) -> anyhow::Result<Exit> 
         )
         .into());
     }
-    let target = match config_path {
+    let file = match config_path {
         Some(path) => path.to_path_buf(),
         None => config::user_config_path()?,
     };
-    let (endpoint, source) = ctx
-        .endpoint()
+    let target = ctx
+        .target()
         .await?;
     eprintln!(
-        "s3-fleet: fleet {} on {} (from {source})",
-        ctx.fleet, endpoint.authority
+        "s3-fleet: fleet {} in bucket {} on {} (from {})",
+        ctx.fleet,
+        target.bucket,
+        target
+            .endpoint
+            .authority,
+        target.source
     );
 
     eprint!("access key: ");
@@ -63,7 +68,7 @@ pub async fn run(ctx: &Ctx, config_path: Option<&Path>) -> anyhow::Result<Exit> 
     }
 
     let s3 = S3::new(
-        endpoint,
+        target.endpoint,
         Some(Credentials {
             access_key: access_key.clone(),
             secret_key: secret_key.clone(),
@@ -71,15 +76,15 @@ pub async fn run(ctx: &Ctx, config_path: Option<&Path>) -> anyhow::Result<Exit> 
         }),
         ctx.timeout(),
     )?;
-    s3.head_object(&ctx.fleet, DOCUMENT_KEY)
+    s3.head_object(&target.bucket, DOCUMENT_KEY)
         .await
         .context("check the keys")?;
 
-    store(&target, &ctx.fleet, &access_key, &secret_key)?;
+    store(&file, &ctx.fleet, &access_key, &secret_key)?;
     eprintln!(
         "s3-fleet: keys for fleet {} stored in {}",
         ctx.fleet,
-        target.display()
+        file.display()
     );
     Ok(Exit::Ok)
 }
