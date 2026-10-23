@@ -21,6 +21,7 @@
 pub mod commands;
 pub mod config;
 pub mod exit;
+pub mod man;
 pub mod setup;
 pub mod ssh;
 
@@ -147,6 +148,9 @@ pub enum Command {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Write the man pages into DIR (packaging)
+    #[command(hide = true)]
+    Manpages { dir: PathBuf },
     /// Run ssh to a fleet host, trusting only its pinned keys
     Ssh {
         /// [USER@]HOST, a host in the fleet

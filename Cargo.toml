@@ -17,6 +17,7 @@ cli = [
     "dep:anyhow",
     "dep:clap",
     "dep:clap_complete",
+    "dep:clap_mangen",
     "dep:rpassword",
     "dep:serde_json",
     "dep:shlex",
@@ -44,6 +45,7 @@ tracing = "0.1"
 anyhow = { version = "1", optional = true }
 clap = { version = "4.6", features = ["derive", "env"], optional = true }
 clap_complete = { version = "4.6", features = ["unstable-dynamic"], optional = true }
+clap_mangen = { version = "0.3", optional = true }
 rpassword = { version = "7.5", optional = true }
 serde_json = { version = "1", optional = true }
 shlex = { version = "2", optional = true }

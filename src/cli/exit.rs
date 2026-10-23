@@ -1,20 +1,10 @@
 //! Exit codes, the part of the CLI contract scripts branch on.
 //!
-//! | code | meaning                                                         |
-//! |------|-----------------------------------------------------------------|
-//! | 0    | success                                                         |
-//! | 1    | any other error (I/O, HTTP status, parse, discovery)            |
-//! | 2    | usage error, or `setup` without a TTY                           |
-//! | 3    | partial: `--keep-going` committed some hosts, others failed     |
-//! | 4    | conflict: someone else wrote first, nothing was written; rerun  |
-//! | 5    | the fleet does not exist, or is not public and we are anonymous |
-//! | 6    | credentials missing or refused                                  |
-//! | 7    | a host's key differs from the pinned one; `--rekey` to accept   |
-//! | 8    | S3 unreachable, and no usable cache (or `--allow-stale` absent) |
-//!
-//! Codes are stable once released. Every error maps to exactly one code
-//! through `exit_code`, whose matches name every variant: a new library error
-//! does not compile until someone decides its code.
+//! Each code's meaning is `Exit::meaning`, which the man page's EXIT STATUS
+//! is rendered from; README.md repeats the table for readers without the
+//! binary. Codes are stable once released. Every error maps to exactly one
+//! code through `exit_code`, whose matches name every variant: a new library
+//! error does not compile until someone decides its code.
 
 use s3_fleet::discover::DiscoverError;
 use s3_fleet::keyscan::KeyscanError;
@@ -24,7 +14,7 @@ use s3_fleet::{DocError, Error};
 
 use super::config::ConfigError;
 
-/// The process exit status; see the table above.
+/// The process exit status.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Exit {
     Ok = 0,
@@ -36,6 +26,36 @@ pub enum Exit {
     Credentials = 6,
     KeyMismatch = 7,
     Unreachable = 8,
+}
+
+impl Exit {
+    pub const ALL: [Exit; 9] = [
+        Exit::Ok,
+        Exit::Error,
+        Exit::Usage,
+        Exit::Partial,
+        Exit::Conflict,
+        Exit::NotFound,
+        Exit::Credentials,
+        Exit::KeyMismatch,
+        Exit::Unreachable,
+    ];
+
+    pub fn meaning(self) -> &'static str {
+        match self {
+            Exit::Ok => "success",
+            Exit::Error => "any other error: I/O, an HTTP status, an invalid document, discovery",
+            Exit::Usage => "usage error, or setup without a terminal",
+            Exit::Partial => "partial: --keep-going committed some hosts, others failed",
+            Exit::Conflict => "conflict: someone else wrote first, nothing was written; rerun",
+            Exit::NotFound => {
+                "the fleet does not exist, or is not public and the request was anonymous"
+            }
+            Exit::Credentials => "credentials missing or refused",
+            Exit::KeyMismatch => "a host's key differs from the pinned one; add --rekey accepts it",
+            Exit::Unreachable => "S3 unreachable, and no usable cache (or no --allow-stale)",
+        }
+    }
 }
 
 /// A failure whose exit code was decided where it happened, for cases no
@@ -161,26 +181,14 @@ mod tests {
 
     use std::collections::HashSet;
 
-    const ALL: [Exit; 9] = [
-        Exit::Ok,
-        Exit::Error,
-        Exit::Usage,
-        Exit::Partial,
-        Exit::Conflict,
-        Exit::NotFound,
-        Exit::Credentials,
-        Exit::KeyMismatch,
-        Exit::Unreachable,
-    ];
-
     #[test]
     fn codes_are_distinct_and_dense() {
-        let codes: HashSet<i32> = ALL
+        let codes: HashSet<i32> = Exit::ALL
             .iter()
             .map(|e| *e as i32)
             .collect();
-        assert_eq!(codes.len(), ALL.len());
-        assert_eq!(codes, (0..ALL.len() as i32).collect());
+        assert_eq!(codes.len(), Exit::ALL.len());
+        assert_eq!(codes, (0..Exit::ALL.len() as i32).collect());
     }
 
     fn fleet(e: Error) -> Exit {

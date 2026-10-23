@@ -25,7 +25,7 @@ use clap_complete::CompleteEnv;
 use tracing_subscriber::EnvFilter;
 
 use cli::exit::{Exit, exit_code};
-use cli::{Cli, Command, Ctx, commands, setup, ssh};
+use cli::{Cli, Command, Ctx, commands, man, setup, ssh};
 
 fn main() -> ExitCode {
     CompleteEnv::with_factory(Cli::command).complete();
@@ -53,6 +53,10 @@ fn main() -> ExitCode {
 }
 
 async fn run(cli: &Cli) -> anyhow::Result<Exit> {
+    if let Command::Manpages { dir } = &cli.command {
+        man::generate(dir)?;
+        return Ok(Exit::Ok);
+    }
     let ctx = Ctx::new(cli)?;
     match &cli.command {
         Command::Setup => {
@@ -96,6 +100,7 @@ async fn run(cli: &Cli) -> anyhow::Result<Exit> {
             )
             .await
         }
+        Command::Manpages { .. } => unreachable!("handled before the fleet is resolved"),
     }
 }
 
