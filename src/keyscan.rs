@@ -14,3 +14,222 @@
 //! not the same as a timeout or a host that returned no key of the requested
 //! type. Resolution failures are recognised by ssh-keyscan's stderr, which is
 //! the only signal it gives; the stderr text is kept in every error.
+
+use std::process::Stdio;
+use std::time::Duration;
+
+use tokio::process::Command;
+
+use crate::doc::{DocError, validate_host_name};
+use crate::known_hosts::{self, DEFAULT_PORT};
+
+/// stderr fragments (lower-cased) that mean the name did not resolve.
+const RESOLUTION_MARKERS: &[&str] = &[
+    "name or service not known",
+    "nodename nor servname provided",
+    "no address associated with hostname",
+    "temporary failure in name resolution",
+    "could not resolve",
+];
+
+/// How to scan.
+#[derive(Clone, Debug)]
+pub struct KeyscanOptions {
+    /// SSH port.
+    pub port: u16,
+    /// Key types, as ssh-keyscan's `-t` names them (`ed25519`, `rsa`, ...).
+    pub key_types: Vec<String>,
+    /// Per-connection timeout, ssh-keyscan's `-T`; at least one second.
+    pub connect_timeout: Duration,
+    /// Wall-clock limit for the whole run, after which the child is killed.
+    pub timeout: Duration,
+}
+
+impl Default for KeyscanOptions {
+    fn default() -> Self {
+        Self {
+            port: DEFAULT_PORT,
+            key_types: vec!["ed25519".to_string()],
+            connect_timeout: Duration::from_secs(5),
+            timeout: Duration::from_secs(15),
+        }
+    }
+}
+
+/// Why a host's keys could not be fetched.
+#[derive(Debug, thiserror::Error)]
+pub enum KeyscanError {
+    /// The host name would not be safe to pass to ssh-keyscan.
+    #[error(transparent)]
+    InvalidHost(#[from] DocError),
+    /// ssh-keyscan could not be run (not installed?).
+    #[error("run ssh-keyscan")]
+    Spawn(#[source] std::io::Error),
+    /// The wall-clock limit passed; the child was killed.
+    #[error("{host}: ssh-keyscan did not finish within {after:?}")]
+    Timeout {
+        /// The host.
+        host: String,
+        /// The limit.
+        after: Duration,
+    },
+    /// The name does not resolve; often a decommissioned host.
+    #[error("{host}: does not resolve: {stderr}")]
+    Resolution {
+        /// The host.
+        host: String,
+        /// ssh-keyscan's stderr.
+        stderr: String,
+    },
+    /// No key of the requested types came back. ssh-keyscan reports a
+    /// refused or unreachable port with no message at all.
+    #[error(
+        "{host}: no {types} key returned (unreachable, refused, or no such key type){}",
+        stderr_suffix(stderr)
+    )]
+    NoKeys {
+        /// The host.
+        host: String,
+        /// The requested types, comma-separated.
+        types: String,
+        /// ssh-keyscan's stderr, often empty.
+        stderr: String,
+    },
+    /// A line of output that is not `<host> <type> <base64>`.
+    #[error("{host}: unexpected ssh-keyscan output {line:?}")]
+    Malformed {
+        /// The host.
+        host: String,
+        /// The line.
+        line: String,
+    },
+}
+
+fn stderr_suffix(stderr: &str) -> String {
+    if stderr.is_empty() {
+        String::new()
+    } else {
+        format!(": {stderr}")
+    }
+}
+
+/// Fetch a host's keys, each as `<type> <base64>`, sorted.
+pub async fn keyscan(host: &str, opts: &KeyscanOptions) -> Result<Vec<String>, KeyscanError> {
+    validate_host_name(host)?;
+    let types = opts
+        .key_types
+        .join(",");
+    let connect = opts
+        .connect_timeout
+        .as_secs()
+        .max(1);
+    let child = Command::new("ssh-keyscan")
+        .arg("-T")
+        .arg(connect.to_string())
+        .arg("-t")
+        .arg(&types)
+        .arg("-p")
+        .arg(
+            opts.port
+                .to_string(),
+        )
+        .arg("--")
+        .arg(host)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(KeyscanError::Spawn)?;
+    let output = tokio::time::timeout(opts.timeout, child.wait_with_output())
+        .await
+        .map_err(|_| KeyscanError::Timeout {
+            host: host.to_string(),
+            after: opts.timeout,
+        })?
+        .map_err(KeyscanError::Spawn)?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr)
+        .trim()
+        .to_string();
+    let keys = parse_output(host, &stdout)?;
+    if keys.is_empty() {
+        let lower = stderr.to_lowercase();
+        if RESOLUTION_MARKERS
+            .iter()
+            .any(|m| lower.contains(m))
+        {
+            return Err(KeyscanError::Resolution {
+                host: host.to_string(),
+                stderr,
+            });
+        }
+        return Err(KeyscanError::NoKeys {
+            host: host.to_string(),
+            types,
+            stderr,
+        });
+    }
+    Ok(keys)
+}
+
+/// Keys from ssh-keyscan's stdout: the host pattern dropped, comments and
+/// blank lines skipped, every key checked to decode.
+fn parse_output(host: &str, stdout: &str) -> Result<Vec<String>, KeyscanError> {
+    let mut keys = Vec::new();
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let malformed = || KeyscanError::Malformed {
+            host: host.to_string(),
+            line: line.to_string(),
+        };
+        let fields: Vec<&str> = line
+            .split_whitespace()
+            .collect();
+        let [_, key_type, blob] = fields[..] else {
+            return Err(malformed());
+        };
+        let key = format!("{key_type} {blob}");
+        known_hosts::fingerprint(&key).map_err(|_| malformed())?;
+        keys.push(key);
+    }
+    keys.sort();
+    keys.dedup();
+    Ok(keys)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testkeys::{KEY_A, KEY_B};
+
+    #[test]
+    fn parse_drops_pattern_and_comments() {
+        let out =
+            format!("# h:22 SSH-2.0-OpenSSH_10.0\nh {KEY_B}\n\n[h]:2222 {KEY_A}\nh {KEY_B}\n");
+        let mut expected = [KEY_A, KEY_B];
+        expected.sort();
+        assert_eq!(parse_output("h", &out).unwrap(), expected);
+    }
+
+    #[test]
+    fn parse_rejects_garbage() {
+        assert!(matches!(
+            parse_output("h", "h ssh-ed25519\n"),
+            Err(KeyscanError::Malformed { .. })
+        ));
+        assert!(matches!(
+            parse_output("h", "h ssh-ed25519 ***\n"),
+            Err(KeyscanError::Malformed { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn option_like_host_is_refused_before_running() {
+        let err = keyscan("-oProxyCommand=x", &KeyscanOptions::default()).await;
+        assert!(matches!(err, Err(KeyscanError::InvalidHost(_))), "{err:?}");
+    }
+}

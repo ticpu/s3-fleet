@@ -28,6 +28,7 @@
 //! goes through reqwest's async client.
 
 pub mod doc;
+pub mod keyscan;
 pub mod known_hosts;
 pub mod s3;
 pub mod selector;
