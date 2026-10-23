@@ -145,8 +145,9 @@ mod tests {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
     fn scratch_dir() -> tempfile::TempDir {
-        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/target/test-tmp");
-        fs::create_dir_all(root).unwrap();
+        landlock_test_confine::to_scratch_only(&landlock_test_confine::target_dir());
+        let root = landlock_test_confine::scratch_dir("test-tmp");
+        fs::create_dir_all(&root).unwrap();
         tempfile::tempdir_in(root).unwrap()
     }
 

@@ -252,3 +252,20 @@ fn completion_offers_cached_hosts_offline() {
     offered.sort();
     assert_eq!(offered, ["web1.example", "web2.example"], "{out:?}");
 }
+
+#[test]
+fn sandbox_refuses_writes_outside_the_build_directory() {
+    let _sb = Sandbox::new();
+    let outside = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("landlock-probe");
+    let written = std::fs::write(&outside, b"x");
+    if written.is_ok() {
+        std::fs::remove_file(&outside).unwrap();
+    }
+    assert_eq!(
+        written
+            .map_err(|e| e.kind())
+            .err(),
+        Some(std::io::ErrorKind::PermissionDenied),
+        "a sandboxed test wrote outside target/: the confinement is not in force"
+    );
+}

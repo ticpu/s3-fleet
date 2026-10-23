@@ -14,7 +14,10 @@ pub struct Sandbox {
 }
 
 impl Sandbox {
+    /// Also confines the calling test thread, and every process it starts,
+    /// to writing under the build directory.
     pub fn new() -> Self {
+        landlock_test_confine::to_scratch_only(&landlock_test_confine::target_dir());
         let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
         std::fs::write(
             dir.path()
@@ -55,6 +58,7 @@ impl Sandbox {
             .env_remove("S3_FLEET")
             .env_remove("S3_FLEET_ENDPOINT")
             .env_remove("S3_FLEET_REGION")
+            .env_remove("S3_FLEET_BUCKET")
             .env_remove("RUST_LOG")
             .stdin(Stdio::null());
         cmd

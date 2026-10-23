@@ -7,6 +7,7 @@ use std::time::Duration;
 use s3_fleet::keyscan::{KeyscanError, KeyscanOptions, keyscan};
 
 fn have_keyscan() -> bool {
+    landlock_test_confine::to_scratch_only(&landlock_test_confine::target_dir());
     let found = std::process::Command::new("ssh-keyscan")
         .arg("-V")
         .output()

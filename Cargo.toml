@@ -52,6 +52,7 @@ shlex = { version = "2", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
 [dev-dependencies]
+landlock-test-confine = "0.5"
 serde_json = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["rt", "macros"] }
