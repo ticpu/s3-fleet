@@ -2,7 +2,7 @@
 //! pinned host keys and free-form labels, plus fleet-wide attributes.
 //!
 //! One bucket holds one fleet, and the bucket is named after the fleet. A
-//! reader needs nothing but the fleet name: `discover` finds the endpoint
+//! reader needs nothing but the fleet name: [`discover`] finds the endpoint
 //! through a DNS TXT record, and the document is world-readable, so listing
 //! hosts or exporting their keys works anonymously. Writing takes S3
 //! credentials.
@@ -27,6 +27,7 @@
 //! The API is async (tokio): ssh-keyscan runs under `tokio::process`, and HTTP
 //! goes through reqwest's async client.
 
+pub mod discover;
 pub mod doc;
 pub mod fleet;
 pub mod keyscan;
