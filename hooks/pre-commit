@@ -36,8 +36,8 @@ if ! test_output=$(cargo test --release 2>&1); then
 fi
 
 if command -v gitleaks &>/dev/null; then
-    echo "Running gitleaks..."
-    if ! gitleaks protect --staged --no-banner; then
+    if ! leaks_output=$(gitleaks protect --staged --no-banner 2>&1); then
+        echo "$leaks_output"
         echo "gitleaks found secrets in staged changes."
         exit 1
     fi
