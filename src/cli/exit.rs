@@ -105,6 +105,7 @@ fn decide(cause: &(dyn std::error::Error + 'static)) -> Option<Exit> {
             KeyscanError::Spawn(_)
             | KeyscanError::Timeout { .. }
             | KeyscanError::Resolution { .. }
+            | KeyscanError::ResolverFailure { .. }
             | KeyscanError::NoKeys { .. }
             | KeyscanError::Malformed { .. } => Exit::Error,
         });

@@ -10,10 +10,20 @@
 //! that s3-fleet targets offers ed25519.
 //!
 //! A failure is classified, so a caller can act on it without parsing text: a
-//! name that does not resolve usually means a decommissioned host, which is
-//! not the same as a timeout or a host that returned no key of the requested
-//! type. Resolution failures are recognised by ssh-keyscan's stderr, which is
-//! the only signal it gives; the stderr text is kept in every error.
+//! name that does not exist usually means a decommissioned host, which is not
+//! the same as a resolver that could not answer, a timeout, or a host that
+//! returned no key of the requested type. The stderr text is kept in every
+//! error.
+//!
+//! ssh-keyscan's stderr is the only signal it gives. A lookup failure is a
+//! line `getaddrinfo <host>: <reason>`, never localised (ssh-keyscan does not
+//! call setlocale), with `<reason>` from `gai_strerror` of the libc
+//! ssh-keyscan was linked against, not ours: glibc, musl and the BSDs each
+//! word it differently, musl's EAI_AGAIN being a bare "Try again". Only the
+//! "no such name" reasons (EAI_NONAME, EAI_NODATA) give [`KeyscanError::Resolution`]; any other
+//! getaddrinfo failure, an unknown wording included, gives
+//! [`KeyscanError::ResolverFailure`]. Taking a resolver outage for a missing
+//! name could get a live host dropped from a fleet; the reverse costs a retry.
 
 use std::process::Stdio;
 use std::time::Duration;
@@ -23,13 +33,17 @@ use tokio::process::Command;
 use crate::doc::{DocError, validate_host_name};
 use crate::known_hosts::{self, DEFAULT_PORT};
 
-/// stderr fragments (lower-cased) that mean the name did not resolve.
-const RESOLUTION_MARKERS: &[&str] = &[
-    "name or service not known",
-    "nodename nor servname provided",
-    "no address associated with hostname",
-    "temporary failure in name resolution",
-    "could not resolve",
+/// ssh-keyscan's prefix on a failed lookup.
+const LOOKUP_FAILED: &str = "getaddrinfo ";
+
+/// `gai_strerror` texts meaning the name has no address: EAI_NONAME and
+/// EAI_NODATA of glibc and musl, EAI_NONAME of the BSDs.
+const NAME_ABSENT: &[&str] = &[
+    "Name or service not known",
+    "No address associated with hostname",
+    "Name does not resolve",
+    "Name has no usable address",
+    "nodename nor servname provided, or not known",
 ];
 
 /// How to scan.
@@ -73,9 +87,20 @@ pub enum KeyscanError {
         /// The limit.
         after: Duration,
     },
-    /// The name does not resolve; often a decommissioned host.
+    /// The resolver answered that the name has no address; often a
+    /// decommissioned host.
     #[error("{host}: does not resolve: {stderr}")]
     Resolution {
+        /// The host.
+        host: String,
+        /// ssh-keyscan's stderr.
+        stderr: String,
+    },
+    /// The lookup failed without saying the name is absent: a resolver that
+    /// did not answer (EAI_AGAIN), a hard resolver error, or a reason not
+    /// recognised. Says nothing about the host.
+    #[error("{host}: name lookup failed (resolver; says nothing about the host): {stderr}")]
+    ResolverFailure {
         /// The host.
         host: String,
         /// ssh-keyscan's stderr.
@@ -154,23 +179,37 @@ pub async fn keyscan(host: &str, opts: &KeyscanOptions) -> Result<Vec<String>, K
         .to_string();
     let keys = parse_output(host, &stdout)?;
     if keys.is_empty() {
-        let lower = stderr.to_lowercase();
-        if RESOLUTION_MARKERS
-            .iter()
-            .any(|m| lower.contains(m))
-        {
-            return Err(KeyscanError::Resolution {
-                host: host.to_string(),
-                stderr,
-            });
-        }
-        return Err(KeyscanError::NoKeys {
-            host: host.to_string(),
-            types,
-            stderr,
-        });
+        return Err(classify_failure(host, types, stderr));
     }
     Ok(keys)
+}
+
+/// The error for a scan that returned no key, from ssh-keyscan's stderr.
+fn classify_failure(host: &str, types: String, stderr: String) -> KeyscanError {
+    let host = host.to_string();
+    let reasons: Vec<&str> = stderr
+        .lines()
+        .filter_map(|line| line.strip_prefix(LOOKUP_FAILED))
+        .map(|rest| {
+            rest.split_once(": ")
+                .map_or("", |(_, reason)| reason.trim())
+        })
+        .collect();
+    if reasons.is_empty() {
+        return KeyscanError::NoKeys {
+            host,
+            types,
+            stderr,
+        };
+    }
+    if reasons
+        .iter()
+        .all(|reason| NAME_ABSENT.contains(reason))
+    {
+        KeyscanError::Resolution { host, stderr }
+    } else {
+        KeyscanError::ResolverFailure { host, stderr }
+    }
 }
 
 /// Keys from ssh-keyscan's stdout: the host pattern dropped, comments and
@@ -224,6 +263,59 @@ mod tests {
         assert!(matches!(
             parse_output("h", "h ssh-ed25519 ***\n"),
             Err(KeyscanError::Malformed { .. })
+        ));
+    }
+
+    fn classify(stderr: &str) -> KeyscanError {
+        classify_failure("h", "ed25519".to_string(), stderr.to_string())
+    }
+
+    #[test]
+    fn absent_name_in_every_libc_is_resolution() {
+        for reason in [
+            "Name or service not known",
+            "No address associated with hostname",
+            "Name does not resolve",
+            "Name has no usable address",
+            "nodename nor servname provided, or not known",
+        ] {
+            let stderr = format!("getaddrinfo h: {reason}\ngetaddrinfo h: {reason}");
+            let err = classify(&stderr);
+            assert!(
+                matches!(err, KeyscanError::Resolution { .. }),
+                "{reason}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_lookup_failures_say_nothing_about_the_host() {
+        for reason in [
+            "Temporary failure in name resolution",
+            "Try again",
+            "Non-recoverable failure in name resolution",
+            "Non-recoverable error",
+            "Something new",
+        ] {
+            let err = classify(&format!("getaddrinfo h: {reason}"));
+            assert!(
+                matches!(err, KeyscanError::ResolverFailure { .. }),
+                "{reason}: {err:?}"
+            );
+        }
+        let mixed = "getaddrinfo h: Name or service not known\ngetaddrinfo h: Try again";
+        assert!(matches!(
+            classify(mixed),
+            KeyscanError::ResolverFailure { .. }
+        ));
+    }
+
+    #[test]
+    fn no_lookup_failure_is_no_keys() {
+        assert!(matches!(classify(""), KeyscanError::NoKeys { .. }));
+        assert!(matches!(
+            classify("write (h): Connection reset by peer"),
+            KeyscanError::NoKeys { .. }
         ));
     }
 
