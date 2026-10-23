@@ -6,6 +6,9 @@
 //! deleted; each test works under its own random key prefix and removes what
 //! it wrote.
 
+// Each test binary compiles this module and uses only part of it.
+#![allow(dead_code)]
+
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use s3_fleet::s3::{Credentials, Endpoint, S3};

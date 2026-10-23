@@ -414,7 +414,7 @@ fn fingerprints(keys: &[String]) -> Vec<String> {
 /// Host names reach ssh and ssh-keyscan as arguments and known_hosts as a
 /// pattern: a leading `-` would be read as an option, and `*?!,[]` or
 /// whitespace as pattern syntax.
-pub(crate) fn validate_host_name(name: &str) -> Result<(), DocError> {
+pub fn validate_host_name(name: &str) -> Result<(), DocError> {
     let invalid = |reason| DocError::InvalidHostName {
         name: name.to_string(),
         reason,
@@ -451,7 +451,7 @@ fn validate_keys(host: &str, keys: &[String]) -> Result<(), DocError> {
 }
 
 /// Label and attribute keys.
-pub(crate) fn validate_key_name(key: &str) -> Result<(), DocError> {
+pub fn validate_key_name(key: &str) -> Result<(), DocError> {
     let valid = !key.is_empty()
         && key
             .bytes()
@@ -464,7 +464,8 @@ pub(crate) fn validate_key_name(key: &str) -> Result<(), DocError> {
     Ok(())
 }
 
-fn validate_label(key: &str, value: &str) -> Result<(), DocError> {
+/// A label: a valid key, and a value with no comma or line break.
+pub fn validate_label(key: &str, value: &str) -> Result<(), DocError> {
     validate_key_name(key)?;
     if value.contains([',', '\n', '\r']) {
         return Err(DocError::InvalidLabelValue {
