@@ -27,4 +27,10 @@
 //! The API is async (tokio): ssh-keyscan runs under `tokio::process`, and HTTP
 //! goes through reqwest's async client.
 
+pub mod doc;
+pub mod known_hosts;
 pub mod s3;
+pub mod selector;
+
+#[cfg(test)]
+mod testkeys;
