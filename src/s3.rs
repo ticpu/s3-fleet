@@ -169,7 +169,7 @@ pub enum S3Error {
         url: String,
     },
     /// HTTP 403. When `anonymous`, the object may also simply not exist.
-    #[error("{method} {url}: HTTP 403{}{}", describe(code.as_deref(), body), anonymous_hint(*anonymous))]
+    #[error("{method} {url}: HTTP 403{}{}", describe(code.as_deref(), body), forbidden_hint(*anonymous))]
     Forbidden {
         /// HTTP method.
         method: Method,
@@ -232,11 +232,11 @@ fn describe(code: Option<&str>, body: &str) -> String {
     }
 }
 
-fn anonymous_hint(anonymous: bool) -> &'static str {
+fn forbidden_hint(anonymous: bool) -> &'static str {
     if anonymous {
         " (anonymous: the object may be missing, or not public)"
     } else {
-        ""
+        " (the keys were refused, or the bucket belongs to another account)"
     }
 }
 
