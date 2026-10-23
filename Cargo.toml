@@ -1,6 +1,6 @@
 [package]
 name = "s3-fleet"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.88"
 description = "A fleet of SSH hosts kept in one S3 object: pinned host keys, labels, discovery over DNS"
