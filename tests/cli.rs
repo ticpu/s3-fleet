@@ -45,6 +45,22 @@ fn cached_known_hosts_without_a_cache_fails_offline() {
         run(&mut sb.cmd(&["-f", "fleet", "known-hosts", "--cached", "--host", "h"]));
     assert_eq!(code, 1, "{err}");
     assert!(out.is_empty());
+    assert!(
+        err.contains("fill the cache with: s3-fleet -f fleet list"),
+        "{err}"
+    );
+
+    // A cache without the host: same exit, but filling the cache is not the fix.
+    s3_fleet::cache::Cache::new(
+        sb.path()
+            .join("cache/s3-fleet"),
+    )
+    .store("fleet", &s3_fleet::FleetDoc::new())
+    .unwrap();
+    let (code, _, err) =
+        run(&mut sb.cmd(&["-f", "fleet", "known-hosts", "--cached", "--host", "h"]));
+    assert_eq!(code, 1, "{err}");
+    assert!(!err.contains("fill the cache"), "{err}");
 }
 
 #[test]

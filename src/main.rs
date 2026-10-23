@@ -23,6 +23,7 @@ use std::process::ExitCode;
 
 use clap::{CommandFactory as _, Parser as _};
 use clap_complete::CompleteEnv;
+use s3_fleet::cache::CacheError;
 use tracing_subscriber::EnvFilter;
 
 use cli::exit::{Exit, exit_code};
@@ -110,6 +111,15 @@ async fn run(cli: &Cli) -> anyhow::Result<Exit> {
 
 /// The next command to run, for a failure that has an obvious one.
 fn hint(cli: &Cli, err: &anyhow::Error) -> Option<String> {
+    if let Command::KnownHosts { cached: true, .. } = cli.command
+        && no_cache(err)
+    {
+        let fleet = cli
+            .fleet
+            .as_deref()
+            .unwrap_or("FLEET");
+        return Some(format!("fill the cache with: s3-fleet -f {fleet} list"));
+    }
     let missing = err
         .chain()
         .find_map(|c| match c.downcast_ref::<s3_fleet::Error>() {
@@ -120,6 +130,16 @@ fn hint(cli: &Cli, err: &anyhow::Error) -> Option<String> {
         return None;
     }
     Some(format!("create it with: s3-fleet -f {missing} init"))
+}
+
+fn no_cache(err: &anyhow::Error) -> bool {
+    err.chain()
+        .any(|c| {
+            matches!(
+                c.downcast_ref::<CacheError>(),
+                Some(CacheError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound
+            )
+        })
 }
 
 /// Only s3-fleet's own events get the `-v` level; dependencies stay at warn.
