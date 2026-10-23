@@ -168,10 +168,17 @@ fn extra_sections() -> Roff {
             "ssh trusting only the pinned key",
         ),
         (
+            "s3-fleet -f prod-sbc ssh sbc1.example.net -o ControlMaster=auto \
+             -o ControlPath=~/.ssh/cm-%C -o ControlPersist=60 uptime",
+            "ssh options after the host still apply, here connection sharing",
+        ),
+        (
             "ssh -o KnownHostsCommand='s3-fleet -f prod-sbc known-hosts --cached --host %H' \
              -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null \
              -o StrictHostKeyChecking=yes -o CheckHostIP=no HOST",
-            "the same from plain ssh",
+            "the same from plain ssh, reading only the local cache: fill it first with \
+             s3-fleet -f prod-sbc show HOST, whose exit code is s3-fleet's, and ssh's \
+             exit code is then ssh's alone",
         ),
     ] {
         roff.control("TP", []);
@@ -218,5 +225,20 @@ mod tests {
             !page.contains("manpages"),
             "the hidden command is not documented"
         );
+    }
+
+    #[test]
+    fn every_command_page_describes_more_than_its_name() {
+        for sub in Cli::command()
+            .get_subcommands()
+            .filter(|s| !s.is_hide_set())
+        {
+            assert!(
+                sub.get_long_about()
+                    .is_some(),
+                "s3-fleet-{}(1): DESCRIPTION would only repeat NAME",
+                sub.get_name()
+            );
+        }
     }
 }

@@ -113,7 +113,11 @@ Every successful read refreshes a copy in `$XDG_CACHE_HOME/s3-fleet/<fleet>.yaml
 -o StrictHostKeyChecking=yes -o CheckHostIP=no
 ```
 
-A script can pass the same options to plain ssh. `known-hosts --cached` never touches the network, since ssh may call it up to three times per connection. Alternatively, `s3-fleet known-hosts -o FILE` writes a file for `-o UserKnownHostsFile=FILE -o StrictHostKeyChecking=yes`.
+Arguments after the host go to ssh after the destination, where OpenSSH still reads options before the remote command: `s3-fleet -f F ssh HOST -o ControlMaster=auto -o ControlPath=~/.ssh/cm-%C uptime` works.
+
+Since s3-fleet replaces itself with ssh, its own exit codes appear only when it fails before ssh starts; after that the status is ssh's, the remote command's or 255. A remote exit of 1 to 8 therefore looks like one of s3-fleet's.
+
+A script that must tell them apart passes the same options to plain ssh, after `s3-fleet -f F show HOST >/dev/null`, which fills the cache and reports with s3-fleet's codes. `known-hosts --cached` never touches the network, since ssh may call it up to three times per connection. With no cache, or a host not in it, it exits 1 and ssh fails with *KnownHostsCommand failed*. Alternatively, `s3-fleet known-hosts -o FILE` writes a file for `-o UserKnownHostsFile=FILE -o StrictHostKeyChecking=yes`.
 
 ## Shell completion
 

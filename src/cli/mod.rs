@@ -80,10 +80,21 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// Store S3 credentials for writing (asks on the terminal)
+    ///
+    /// Prompts for the access key and secret, checks them against the
+    /// endpoint, and saves them mode 0600 in $XDG_CONFIG_HOME/s3-fleet.yaml,
+    /// under the fleet's name, or as the default without --fleet. Refuses
+    /// without a terminal; scripts use AWS_ACCESS_KEY_ID and
+    /// AWS_SECRET_ACCESS_KEY instead.
     Setup,
     /// Create the fleet's bucket and an empty fleet document
+    ///
+    /// Needs credentials. A bucket the same credentials already own is
+    /// reused, and an existing document is left untouched.
     Init,
     /// List hosts, one per line, or as JSON
+    ///
+    /// Reads the fleet from S3 and refreshes the local cache.
     List {
         /// Label selector: k=v, k!=v, k, !k, comma-separated; repeat to AND
         #[arg(short = 'l', long = "selector")]
@@ -93,6 +104,9 @@ pub enum Command {
         json: bool,
     },
     /// Show one host
+    ///
+    /// Reads the fleet from S3 and refreshes the local cache; exits 1 when
+    /// the host is not in the fleet.
     Show {
         #[arg(add = ArgValueCandidates::new(commands::cached_hosts))]
         host: String,
@@ -101,6 +115,10 @@ pub enum Command {
         json: bool,
     },
     /// Keyscan hosts and pin their keys (all or nothing unless --keep-going)
+    ///
+    /// Runs ssh-keyscan on each host and commits them in one conditional
+    /// write. A host already in the fleet whose key changed is refused with
+    /// exit 7 unless --rekey.
     Add {
         #[arg(required = true)]
         hosts: Vec<String>,
@@ -121,6 +139,8 @@ pub enum Command {
         keep_going: bool,
     },
     /// Remove hosts (all or nothing unless --keep-going)
+    ///
+    /// The removals are committed in one conditional write.
     Rm {
         #[arg(required = true, add = ArgValueCandidates::new(commands::cached_hosts))]
         hosts: Vec<String>,
@@ -129,16 +149,34 @@ pub enum Command {
         keep_going: bool,
     },
     /// Set (k=v) or remove (k-) labels: label HOST... CHANGE...
+    ///
+    /// The arguments that hold = or end in - are changes, the others hosts;
+    /// every change applies to every host, in one conditional write.
     Label {
         #[arg(required = true, num_args = 2.., add = ArgValueCandidates::new(commands::cached_hosts))]
         args: Vec<String>,
     },
     /// Fleet-wide attributes
+    ///
+    /// Key-value pairs stored with the fleet rather than with a host, such
+    /// as settings shared by every tool reading it.
     Attr {
         #[command(subcommand)]
         command: AttrCommand,
     },
     /// Print known_hosts lines for ssh -o UserKnownHostsFile or KnownHostsCommand
+    ///
+    /// Reads the fleet from S3 and refreshes the local cache, unless
+    /// --cached: then only the local copy is read and the network never is,
+    /// which is what a KnownHostsCommand needs, since ssh may run it three
+    /// times per connection.
+    ///
+    /// With --cached, a missing cache or an unknown --host exits 1, and ssh
+    /// then reports "KnownHostsCommand failed" and exits 255. Any command
+    /// that reads the fleet from S3 fills the cache: list, show, ssh,
+    /// known-hosts without --cached, add, rm, label and attr. Run
+    /// s3-fleet -f FLEET list >/dev/null once on a new machine, and again
+    /// after the fleet changes.
     KnownHosts {
         /// Label selector, as for list
         #[arg(short = 'l', long = "selector")]
@@ -157,6 +195,26 @@ pub enum Command {
     #[command(hide = true)]
     Manpages { dir: PathBuf },
     /// Run ssh to a fleet host, trusting only its pinned keys
+    ///
+    /// Reads the fleet from S3 once, which refreshes the local cache, then
+    /// replaces itself with the system ssh (exec), adding: -o
+    /// KnownHostsCommand calling s3-fleet known-hosts --cached --host %H,
+    /// -o UserKnownHostsFile=/dev/null, -o GlobalKnownHostsFile=/dev/null, -o
+    /// StrictHostKeyChecking=yes, -o CheckHostIP=no, -p when the fleet gives
+    /// the host a port, and -l USER for USER@HOST. With S3 unreachable it
+    /// fails, unless --allow-stale.
+    ///
+    /// Exit status: s3-fleet's own codes only when it fails before ssh
+    /// starts. Once ssh runs, the status is ssh's: the remote command's, or
+    /// 255 for an ssh error, so a remote exit of 1 to 8 looks like one of
+    /// s3-fleet's. A caller that must tell them apart runs s3-fleet -f
+    /// FLEET show HOST >/dev/null first, then plain ssh with the
+    /// KnownHostsCommand line shown in s3-fleet(1).
+    ///
+    /// Arguments after HOST go to ssh after the destination. OpenSSH still
+    /// reads options there, then takes the rest as the remote command, as in
+    /// s3-fleet -f FLEET ssh HOST -o ControlMaster=auto -o
+    /// ControlPath=~/.ssh/cm-%C -o ControlPersist=60 uptime
     Ssh {
         /// [USER@]HOST, a host in the fleet
         #[arg(add = ArgValueCandidates::new(commands::cached_hosts))]
