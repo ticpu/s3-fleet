@@ -1,10 +1,19 @@
-//! A minimal S3 client: GET, HEAD, PUT and DELETE of single objects, and
-//! bucket creation.
+//! A minimal S3 client: GET, HEAD, PUT and DELETE of single objects, bucket
+//! listing, and bucket creation.
 //!
 //! Hand-rolled on reqwest and aws-sigv4 rather than aws-sdk-s3 or
-//! object_store, both far heavier than these few verbs need. A fleet is one
-//! object, so there is no ListObjects. DELETE exists for callers that keep
-//! objects of their own beside the fleet document.
+//! object_store, both far heavier than these few verbs need. The fleet itself
+//! is one object; DELETE and the listing exist for callers that keep objects
+//! of their own beside the fleet document, such as per-host data they prune
+//! when a host leaves the fleet.
+//!
+//! # Listing
+//!
+//! [`S3::list_objects`] follows ListObjectsV2 pages to the end and returns
+//! one `Vec`. Anything that would make the listing silently short is an
+//! error: a truncated page without a continuation token, a token repeated, an
+//! object without key or size, an entity XML does not predefine. Keys are
+//! unescaped exactly once; `&amp;amp;` in the XML is the key `&amp;`.
 //!
 //! # Environment
 //!
@@ -58,6 +67,8 @@ use aws_sigv4::http_request::{
 use aws_sigv4::sign::v4;
 use aws_smithy_runtime_api::client::identity::Identity;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
+use quick_xml::Reader;
+use quick_xml::events::{BytesRef, Event};
 use reqwest::header::{ETAG, HeaderName, HeaderValue};
 use reqwest::{Method, StatusCode};
 use tracing::debug;
@@ -69,6 +80,14 @@ const KEY_ENCODE: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'_')
     .remove(b'~')
     .remove(b'/');
+
+/// Query values: RFC 3986 unreserved only, so `/` becomes `%2F` as SigV4's
+/// canonical query string requires.
+const QUERY_ENCODE: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
 
 /// Error bodies are kept for diagnostics, capped so a proxy's HTML page does
 /// not flood stderr.
@@ -112,6 +131,16 @@ impl fmt::Debug for Credentials {
             )
             .finish()
     }
+}
+
+/// One object in a bucket listing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ListedObject {
+    /// The object's key, unescaped.
+    pub key: String,
+    /// Its size in bytes.
+    pub size: u64,
 }
 
 /// An object's content and the ETag it was read at.
@@ -207,6 +236,16 @@ pub enum S3Error {
         method: Method,
         /// Request URL.
         url: String,
+    },
+    /// A 2xx response whose body is not what the request returns.
+    #[error("{method} {url}: unexpected response: {reason}")]
+    Malformed {
+        /// HTTP method.
+        method: Method,
+        /// Request URL.
+        url: String,
+        /// What is wrong with it.
+        reason: String,
     },
     /// The bucket name is taken by another account.
     #[error("bucket {bucket} already exists and belongs to another account")]
@@ -388,6 +427,85 @@ impl S3 {
             .check(Method::PUT, &url, resp)
             .await?;
         Ok(etag(&resp))
+    }
+
+    /// Every object in `bucket` whose key starts with `prefix`, in the order
+    /// S3 lists them (by key). Follows ListObjectsV2 pagination to the end.
+    pub async fn list_objects(
+        &self,
+        bucket: &str,
+        prefix: Option<&str>,
+    ) -> Result<Vec<ListedObject>, S3Error> {
+        self.list_objects_paged(bucket, prefix, None)
+            .await
+    }
+
+    /// `max_keys` caps each page, which lets the tests force pagination.
+    async fn list_objects_paged(
+        &self,
+        bucket: &str,
+        prefix: Option<&str>,
+        max_keys: Option<u32>,
+    ) -> Result<Vec<ListedObject>, S3Error> {
+        let mut objects = Vec::new();
+        let mut token: Option<String> = None;
+        loop {
+            let url = self.list_url(bucket, prefix, token.as_deref(), max_keys);
+            let resp = self
+                .send(Method::GET, &url, Vec::new(), &[])
+                .await?;
+            let resp = self
+                .check(Method::GET, &url, resp)
+                .await?;
+            let body = resp
+                .bytes()
+                .await
+                .map_err(|source| S3Error::Transport {
+                    method: Method::GET,
+                    url: url.clone(),
+                    source,
+                })?;
+            let malformed = |reason| S3Error::Malformed {
+                method: Method::GET,
+                url: url.clone(),
+                reason,
+            };
+            let page = parse_list_page(&body).map_err(malformed)?;
+            objects.extend(page.objects);
+            match page.next {
+                None => return Ok(objects),
+                Some(next) if token.as_deref() == Some(next.as_str()) => {
+                    return Err(malformed(format!(
+                        "continuation token {next:?} repeated; the listing would never end"
+                    )));
+                }
+                Some(next) => token = Some(next),
+            }
+        }
+    }
+
+    fn list_url(
+        &self,
+        bucket: &str,
+        prefix: Option<&str>,
+        token: Option<&str>,
+        max_keys: Option<u32>,
+    ) -> String {
+        let mut query = vec![("list-type", "2".to_string())];
+        if let Some(prefix) = prefix {
+            query.push(("prefix", prefix.to_string()));
+        }
+        if let Some(token) = token {
+            query.push(("continuation-token", token.to_string()));
+        }
+        if let Some(max) = max_keys {
+            query.push(("max-keys", max.to_string()));
+        }
+        let query: Vec<String> = query
+            .iter()
+            .map(|(k, v)| format!("{k}={}", utf8_percent_encode(v, QUERY_ENCODE)))
+            .collect();
+        format!("{}?{}", self.url(bucket, None), query.join("&"))
     }
 
     /// DELETE an object. An object already absent (404) is success.
@@ -657,6 +775,114 @@ fn classify(
     }
 }
 
+/// One page of a ListObjectsV2 answer.
+#[derive(Debug, PartialEq, Eq)]
+struct ListPage {
+    objects: Vec<ListedObject>,
+    /// The continuation token, when the listing goes on.
+    next: Option<String>,
+}
+
+/// Reads `Contents/Key`, `Contents/Size`, `IsTruncated` and
+/// `NextContinuationToken` under `ListBucketResult`; ignores the rest. A
+/// truncated page without a token, or an object without a key or size, is an
+/// error rather than a silently short listing.
+fn parse_list_page(xml: &[u8]) -> Result<ListPage, String> {
+    let mut reader = Reader::from_reader(xml);
+    let mut path: Vec<String> = Vec::new();
+    let mut text = String::new();
+    let mut objects = Vec::new();
+    let (mut key, mut size) = (None, None);
+    let mut truncated = None;
+    let mut next = None;
+    loop {
+        match reader
+            .read_event()
+            .map_err(|e| format!("XML: {e}"))?
+        {
+            Event::Start(e) => {
+                let name = e
+                    .local_name()
+                    .as_ref()
+                    .to_string();
+                if name == "Contents" {
+                    key = None;
+                    size = None;
+                }
+                path.push(name);
+                text.clear();
+            }
+            Event::Text(t) => text.push_str(&t.xml10_content()),
+            Event::CData(c) => text.push_str(&c),
+            Event::GeneralRef(r) => text.push(resolve_entity(&r)?),
+            Event::End(_) => {
+                let name = path
+                    .pop()
+                    .unwrap_or_default();
+                let parent = path
+                    .last()
+                    .map(String::as_str);
+                match (parent, name.as_str()) {
+                    (Some("Contents"), "Key") => key = Some(std::mem::take(&mut text)),
+                    (Some("Contents"), "Size") => {
+                        size = Some(
+                            text.trim()
+                                .parse::<u64>()
+                                .map_err(|e| format!("Size {text:?}: {e}"))?,
+                        );
+                    }
+                    (Some("ListBucketResult"), "Contents") => {
+                        let (Some(key), Some(size)) = (key.take(), size.take()) else {
+                            return Err("an object without Key or Size".to_string());
+                        };
+                        objects.push(ListedObject { key, size });
+                    }
+                    (Some("ListBucketResult"), "IsTruncated") => {
+                        truncated = Some(text.trim() == "true");
+                    }
+                    (Some("ListBucketResult"), "NextContinuationToken") => {
+                        next = Some(std::mem::take(&mut text));
+                    }
+                    _ => {}
+                }
+                text.clear();
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    match truncated {
+        None => Err("no IsTruncated".to_string()),
+        Some(false) => Ok(ListPage {
+            objects,
+            next: None,
+        }),
+        Some(true) if next.is_none() => {
+            Err("IsTruncated is true but NextContinuationToken is missing".to_string())
+        }
+        Some(true) => Ok(ListPage { objects, next }),
+    }
+}
+
+/// `&#...;` character references and XML's five predefined entities; S3
+/// sends nothing else, and anything else is refused rather than kept as text.
+fn resolve_entity(r: &BytesRef<'_>) -> Result<char, String> {
+    if let Some(c) = r
+        .resolve_char_ref()
+        .map_err(|e| format!("&{};: {e}", &**r))?
+    {
+        return Ok(c);
+    }
+    match &**r {
+        "amp" => Ok('&'),
+        "lt" => Ok('<'),
+        "gt" => Ok('>'),
+        "quot" => Ok('"'),
+        "apos" => Ok('\''),
+        other => Err(format!("unknown entity &{other};")),
+    }
+}
+
 fn cap(body: &str) -> String {
     match body
         .char_indices()
@@ -906,6 +1132,167 @@ mod tests {
         assert!(
             body.contains("<LocationConstraint>a&lt;b</LocationConstraint>"),
             "{body}"
+        );
+    }
+
+    fn page(xml: &str) -> Result<ListPage, String> {
+        parse_list_page(xml.as_bytes())
+    }
+
+    fn listed(key: &str, size: u64) -> ListedObject {
+        ListedObject {
+            key: key.to_string(),
+            size,
+        }
+    }
+
+    const HEAD: &str = r#"<?xml version="1.0" encoding="UTF-8"?><ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>b</Name>"#;
+
+    #[test]
+    fn list_page_last() {
+        let p = page(&format!(
+            "{HEAD}<IsTruncated>false</IsTruncated>\
+             <Contents><Key>fleet.yaml</Key><ETag>\"x\"</ETag><Size>12</Size></Contents>\
+             <Contents><Key>h1.json</Key><Size>3</Size></Contents></ListBucketResult>"
+        ))
+        .unwrap();
+        assert_eq!(p.objects, [listed("fleet.yaml", 12), listed("h1.json", 3)]);
+        assert_eq!(p.next, None);
+    }
+
+    #[test]
+    fn list_page_truncated_carries_its_token() {
+        let p = page(&format!(
+            "{HEAD}<IsTruncated>true</IsTruncated><NextContinuationToken>tok/=+</NextContinuationToken>\
+             <Contents><Key>a</Key><Size>1</Size></Contents></ListBucketResult>"
+        ))
+        .unwrap();
+        assert_eq!(
+            p.next
+                .as_deref(),
+            Some("tok/=+")
+        );
+    }
+
+    #[test]
+    fn list_page_unescapes_exactly_once() {
+        let p = page(&format!(
+            "{HEAD}<IsTruncated>false</IsTruncated>\
+             <Contents><Key>a&amp;amp;b &#233;&#x41;&lt;</Key><Size>1</Size></Contents>\
+             <Contents><Key><![CDATA[c&amp;d]]></Key><Size>2</Size></Contents></ListBucketResult>"
+        ))
+        .unwrap();
+        assert_eq!(
+            p.objects[0].key, "a&amp;b éA<",
+            "one level of escaping removed"
+        );
+        assert_eq!(p.objects[1].key, "c&amp;d", "CDATA is literal");
+    }
+
+    #[test]
+    fn list_page_refuses_what_would_shorten_a_listing() {
+        for (body, why) in [
+            (
+                format!("{HEAD}<IsTruncated>true</IsTruncated></ListBucketResult>"),
+                "truncated without a token",
+            ),
+            (format!("{HEAD}</ListBucketResult>"), "no IsTruncated"),
+            (
+                format!(
+                    "{HEAD}<IsTruncated>false</IsTruncated><Contents><Key>a</Key></Contents></ListBucketResult>"
+                ),
+                "object without Size",
+            ),
+            (
+                format!(
+                    "{HEAD}<IsTruncated>false</IsTruncated><Contents><Key>&nbsp;</Key><Size>1</Size></Contents></ListBucketResult>"
+                ),
+                "unknown entity",
+            ),
+            ("<ListBucketResult><IsTruncated>".to_string(), "cut short"),
+        ] {
+            assert!(page(&body).is_err(), "{why} accepted");
+        }
+    }
+
+    #[test]
+    fn list_url_encodes_query_values() {
+        let s3 = client(false);
+        assert_eq!(
+            s3.list_url("b", Some("a b/&+"), Some("t/=+"), Some(2)),
+            "https://[2001:db8::1]:7480/b?list-type=2&prefix=a%20b%2F%26%2B\
+             &continuation-token=t%2F%3D%2B&max-keys=2"
+        );
+    }
+
+    /// Live, like tests/s3_live.rs: skipped without S3_FLEET_TEST_ENDPOINT. In
+    /// this module because it forces pages of two through the private pager.
+    #[tokio::test]
+    async fn list_follows_pages_and_round_trips_odd_keys() {
+        let Ok(authority) = std::env::var("S3_FLEET_TEST_ENDPOINT") else {
+            eprintln!("skipped: S3_FLEET_TEST_ENDPOINT unset");
+            return;
+        };
+        let var = |name: &str| std::env::var(name).unwrap_or_else(|_| panic!("{name} unset"));
+        let s3 = S3::new(
+            Endpoint {
+                authority,
+                region: var("S3_FLEET_TEST_REGION"),
+            },
+            Some(Credentials {
+                access_key: var("AWS_ACCESS_KEY_ID"),
+                secret_key: var("AWS_SECRET_ACCESS_KEY"),
+                session_token: None,
+            }),
+            Duration::from_secs(15),
+        )
+        .unwrap();
+        let bucket = var("S3_FLEET_TEST_BUCKET");
+        let prefix = format!(
+            "it/list-{}-{}/",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let names = ["a b.json", "c&d+e.json", "é.json"];
+        for (i, name) in names
+            .iter()
+            .enumerate()
+        {
+            s3.put_object(
+                &bucket,
+                &format!("{prefix}{name}"),
+                vec![0; i + 1],
+                "application/json",
+                None,
+            )
+            .await
+            .unwrap();
+        }
+
+        let got = s3
+            .list_objects_paged(&bucket, Some(&prefix), Some(2))
+            .await
+            .unwrap();
+        let expected: Vec<ListedObject> = names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| listed(&format!("{prefix}{name}"), i as u64 + 1))
+            .collect();
+        assert_eq!(got, expected, "three objects over two pages");
+
+        for name in names {
+            s3.delete_object(&bucket, &format!("{prefix}{name}"))
+                .await
+                .unwrap();
+        }
+        assert!(
+            s3.list_objects(&bucket, Some(&prefix))
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 }

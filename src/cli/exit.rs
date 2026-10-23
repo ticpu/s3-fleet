@@ -154,6 +154,7 @@ fn s3_error(e: &S3Error) -> Exit {
         S3Error::Transport { .. } => Exit::Unreachable,
         S3Error::Client(_)
         | S3Error::Signing { .. }
+        | S3Error::Malformed { .. }
         | S3Error::BucketOwnedByOther { .. }
         | S3Error::Status { .. } => Exit::Error,
     }
