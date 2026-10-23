@@ -2,3 +2,5 @@
 Cargo.lock
 /dist/
 /scratch/
+/package.*/
+*.deb

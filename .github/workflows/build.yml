@@ -36,22 +36,31 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    # Full history: the Makefile derives the package version from tags and
+    # the commit count.
     - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
 
-    - name: Cross-compile both targets
-      run: ./build.sh
+    - name: Cross-compile both targets and package them
+      run: make deb
 
-    - name: Smoke-test the amd64 binary
+    - name: Smoke-test the amd64 binary and package
       run: |
         version=$(./dist/s3-fleet.amd64 --version)
         echo "$version"
         [[ "$version" == s3-fleet\ * ]]
+        dpkg-deb --info s3-fleet_*_amd64.deb
+        dpkg-deb --contents s3-fleet_*_amd64.deb | grep -q usr/share/man/man1/s3-fleet.1.gz
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v7
       with:
         name: s3-fleet-binaries
-        path: dist/
+        path: |
+          dist/s3-fleet.amd64
+          dist/s3-fleet.arm64
+          s3-fleet_*.deb
         retention-days: 30
 
   release:
@@ -66,11 +75,11 @@ jobs:
       with:
         fetch-depth: 0
 
-    - name: Download binaries
+    - name: Download binaries and packages
       uses: actions/download-artifact@v8
       with:
         name: s3-fleet-binaries
-        path: dist
+        path: artifacts
 
     - name: Check tag matches Cargo.toml version
       run: |
@@ -84,9 +93,10 @@ jobs:
       run: |
         version="${GITHUB_REF_NAME#v}"
         mkdir assets
-        mv dist/s3-fleet.amd64 "assets/s3-fleet_${version}_linux_amd64"
-        mv dist/s3-fleet.arm64 "assets/s3-fleet_${version}_linux_arm64"
-        chmod +x assets/*
+        mv artifacts/dist/s3-fleet.amd64 "assets/s3-fleet_${version}_linux_amd64"
+        mv artifacts/dist/s3-fleet.arm64 "assets/s3-fleet_${version}_linux_arm64"
+        chmod +x assets/s3-fleet_*_linux_*
+        mv artifacts/s3-fleet_*.deb assets/
         cd assets
         sha256sum s3-fleet_* > SHA256SUMS
 

@@ -2,7 +2,8 @@
 # static-pie through rust-lld, with no glibc floor. TLS (reqwest's rustls on
 # aws-lc-rs) brings C code, built with clang against each target's musl
 # headers from Debian multiarch; the readelf check at the end proves no
-# shared library slipped in.
+# shared library slipped in. The man pages are rendered by whichever of the
+# two binaries matches the build host. Run through `make`, not directly.
 FROM docker.io/library/debian:bookworm AS build
 
 RUN --mount=type=cache,target=/var/cache/apt,id=apt-cache-bookworm \
@@ -54,7 +55,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry \
             readelf -d "/out/s3-fleet.$arch" | grep NEEDED >&2; \
             exit 1; \
         fi; \
-    done
+    done; \
+    "/out/s3-fleet.$(dpkg --print-architecture)" manpages /out/man
 
 FROM scratch
 COPY --from=build /out/ /

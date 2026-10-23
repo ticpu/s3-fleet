@@ -1,0 +1,6 @@
+# serde_norway carries unsafe-libyaml, a Rust translation of libyaml, linked
+# statically like every other dependency of a static musl binary.
+s3-fleet: embedded-library libyaml [usr/bin/s3-fleet]
+# A static-pie executable has the ELF type of a shared object and no
+# DT_NEEDED, which is what lintian takes for a library missing its deps.
+s3-fleet: shared-library-lacks-prerequisites [usr/bin/s3-fleet]

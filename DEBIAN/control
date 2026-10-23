@@ -1,0 +1,15 @@
+Package: s3-fleet
+Version: 0.0.0-replaced-by-makefile
+Section: net
+Priority: optional
+Architecture: replaced-by-makefile
+Recommends: openssh-client
+Maintainer: Jérôme Poulin <jeromepoulin@gmail.com>
+Homepage: https://github.com/ticpu/s3-fleet
+Description: SSH host fleet kept in S3, with pinned host keys and labels
+ s3-fleet keeps a fleet of SSH hosts as one YAML document in an S3 bucket:
+ each host's pinned host keys and labels, plus fleet-wide attributes. The
+ endpoint is discovered through DNS, reads need no credentials, and every
+ write is conditional so concurrent edits are never lost. It lists hosts by
+ label for scripts, exports known_hosts lines, and runs ssh trusting only
+ the pinned keys.

@@ -113,6 +113,8 @@ A script can pass the same options to plain ssh. `known-hosts --cached` never to
 
 ## Shell completion
 
+The Debian package installs bash completion. Otherwise, or for another shell:
+
 ```sh
 source <(COMPLETE=bash s3-fleet)    # also zsh, fish, elvish, powershell
 ```
@@ -156,9 +158,11 @@ fleet.commit(snapshot, &doc).await?; // Error::Conflict if someone wrote first
 
 Build with `default-features = false` to leave out the command-line dependencies. The library never retries, never falls back to the cache on its own, and never prompts.
 
-## Release binaries
+## Installing
 
-Static musl binaries for x86_64 and aarch64 are attached to each GitHub release, with `SHA256SUMS` and detached signatures. `./build.sh` builds both locally in one podman or docker pass.
+On Debian or Ubuntu, from [apt.ticpu.net](https://apt.ticpu.net) (any release, through its `generic` suite): `apt install s3-fleet`. The package carries the man pages (`man s3-fleet`, `man s3-fleet-add`, ...) and bash completion, and recommends openssh-client for `add` and `ssh`.
+
+Each GitHub release also carries static musl binaries and `.deb` packages for x86_64 and aarch64, with `SHA256SUMS` and detached signatures. `make` builds the binaries and man pages locally in one podman or docker pass, and `make deb` packages them.
 
 ## License
 
