@@ -62,11 +62,14 @@ pub enum Error {
         /// The name.
         name: String,
     },
-    /// The bucket or its document does not exist.
-    #[error("fleet {fleet} does not exist; create it with init")]
+    /// The bucket or its document does not exist; [`Fleet::init`] creates
+    /// both.
+    #[error("fleet {fleet} does not exist in bucket {bucket}")]
     NotFound {
         /// The fleet.
         fleet: String,
+        /// The bucket it was looked for in.
+        bucket: String,
         /// The S3 response.
         #[source]
         source: Box<S3Error>,

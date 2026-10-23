@@ -178,6 +178,9 @@ impl Fleet {
         match e {
             S3Error::NotFound { .. } => Error::NotFound {
                 fleet,
+                bucket: self
+                    .bucket
+                    .clone(),
                 source: Box::new(e),
             },
             S3Error::Forbidden { .. } => Error::Forbidden {

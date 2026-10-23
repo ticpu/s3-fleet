@@ -4,12 +4,16 @@
 //!
 //! It refuses to run when stdin is not a TTY (exit 2), so a script can never
 //! hang on it. The secret is read with echo off and appears in no message.
-//! The keypair is checked with a signed HEAD of the fleet document before
+//! The keypair is checked with a signed GET of the fleet document before
 //! anything is written: 200 or 404 mean the keys were accepted, 403 means they
-//! were refused (exit 6). The file is replaced through a 0600 temp file and a
-//! rename, so a looser mode on the old file is not checked: it is gone after
-//! the rename. Other settings in it are kept, its comments are not, since it
-//! is re-serialised.
+//! were refused (exit 6). A GET, not a HEAD, because only a body carries the
+//! S3 error code: `InvalidAccessKeyId` and `SignatureDoesNotMatch` tell an
+//! unknown user from a wrong secret, and `NoSuchBucket` from `NoSuchKey` lets
+//! setup end by naming what `init` still has to create.
+//!
+//! The file is replaced through a 0600 temp file and a rename, so a looser
+//! mode on the old file is not checked: it is gone after the rename. Other
+//! settings in it are kept, its comments are not, since it is re-serialised.
 
 use std::fs;
 use std::io::{self, BufRead as _, IsTerminal as _, Write as _};
@@ -18,7 +22,7 @@ use std::path::Path;
 
 use anyhow::Context as _;
 use s3_fleet::fleet::DOCUMENT_KEY;
-use s3_fleet::s3::{Credentials, S3};
+use s3_fleet::s3::{Credentials, S3, S3Error};
 use serde_norway::{Mapping, Value};
 
 use super::Ctx;
@@ -76,9 +80,15 @@ pub async fn run(ctx: &Ctx, config_path: Option<&Path>) -> anyhow::Result<Exit> 
         }),
         ctx.timeout(),
     )?;
-    s3.head_object(&target.bucket, DOCUMENT_KEY)
+    let bucket = &target.bucket;
+    let missing = match s3
+        .get_object(bucket, DOCUMENT_KEY)
         .await
-        .context("check the keys")?;
+    {
+        Ok(_) => None,
+        Err(S3Error::NotFound { code, .. }) => Some(code),
+        Err(e) => return Err(anyhow::Error::new(e).context("check the keys")),
+    };
 
     store(&file, &ctx.fleet, &access_key, &secret_key)?;
     eprintln!(
@@ -86,6 +96,18 @@ pub async fn run(ctx: &Ctx, config_path: Option<&Path>) -> anyhow::Result<Exit> 
         ctx.fleet,
         file.display()
     );
+    let fleet = &ctx.fleet;
+    let what = match missing.as_ref() {
+        None => return Ok(Exit::Ok),
+        Some(Some(code)) if code == "NoSuchBucket" => {
+            format!("bucket {bucket} does not exist yet; create it and an empty fleet")
+        }
+        Some(Some(code)) if code == "NoSuchKey" => {
+            format!("bucket {bucket} exists but holds no fleet; create one")
+        }
+        Some(_) => format!("no fleet found in bucket {bucket}; create it"),
+    };
+    eprintln!("s3-fleet: {what} with: s3-fleet -f {fleet} init");
     Ok(Exit::Ok)
 }
 

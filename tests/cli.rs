@@ -85,6 +85,10 @@ fn anonymous_reads_and_refused_writes() {
         "list",
     ]));
     assert_eq!(code, 5, "a missing fleet, anonymously: {err}");
+    assert!(
+        err.contains("create it with: s3-fleet -f s3-fleet-never-created init"),
+        "{err}"
+    );
 }
 
 #[test]

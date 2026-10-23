@@ -75,6 +75,35 @@ fn extra_sections() -> Roff {
          --bucket overrides it. Reads are anonymous; writes need credentials.",
     )]);
 
+    section(&mut roff, "FIRST USE");
+    for (step, text) in [
+        (
+            "1. Publish the TXT record",
+            "as in DISCOVERY, or pass --endpoint (and --bucket) on every command.",
+        ),
+        (
+            "2. s3-fleet -f FLEET setup",
+            "stores the S3 keys for writing, after checking them, and says whether the bucket \
+             and the fleet exist yet.",
+        ),
+        (
+            "3. s3-fleet -f FLEET init",
+            "creates the bucket and an empty fleet; an existing fleet is never overwritten. A \
+             bucket name taken by another account fails here: pick another with bucket= or \
+             --bucket.",
+        ),
+        (
+            "4. s3-fleet -f FLEET add HOST... -l KEY=VALUE",
+            "pins the hosts' keys. Reading needs no keys from here on.",
+        ),
+    ] {
+        entry(&mut roff, step, text);
+    }
+    roff.control("PP", []);
+    roff.text([roman(
+        "Before init, every read exits 5 and its message names the bucket it looked in.",
+    )]);
+
     section(&mut roff, "EXIT STATUS");
     for code in Exit::ALL {
         entry(&mut roff, &(code as u8).to_string(), code.meaning());

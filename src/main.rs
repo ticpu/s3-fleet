@@ -47,6 +47,9 @@ fn main() -> ExitCode {
         Ok(exit) => exit,
         Err(err) => {
             eprintln!("s3-fleet: {err:#}");
+            if let Some(hint) = hint(&cli, &err) {
+                eprintln!("s3-fleet: {hint}");
+            }
             exit_code(&err)
         }
     };
@@ -103,6 +106,20 @@ async fn run(cli: &Cli) -> anyhow::Result<Exit> {
         }
         Command::Manpages { .. } => unreachable!("handled before the fleet is resolved"),
     }
+}
+
+/// The next command to run, for a failure that has an obvious one.
+fn hint(cli: &Cli, err: &anyhow::Error) -> Option<String> {
+    let missing = err
+        .chain()
+        .find_map(|c| match c.downcast_ref::<s3_fleet::Error>() {
+            Some(s3_fleet::Error::NotFound { fleet, .. }) => Some(fleet),
+            _ => None,
+        })?;
+    if matches!(cli.command, Command::Init) {
+        return None;
+    }
+    Some(format!("create it with: s3-fleet -f {missing} init"))
 }
 
 /// Only s3-fleet's own events get the `-v` level; dependencies stay at warn.
