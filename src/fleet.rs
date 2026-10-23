@@ -3,7 +3,7 @@
 //! [`Fleet::load`] reads `fleet.yaml` and returns it with its ETag;
 //! [`Fleet::commit`] writes a changed document back with `If-Match` on that
 //! ETag, and [`Fleet::init`] creates the bucket and writes an empty document
-//! with `If-None-Match: *`. Every write is conditional: an unconditional PUT
+//! with `If-None-Match: *`, or [`Fleet::init_with`] a complete one. Every write is conditional: an unconditional PUT
 //! would let two concurrent editors each overwrite the other's change without
 //! a trace.
 //!
@@ -96,11 +96,19 @@ impl Fleet {
     /// Create the bucket if needed, then an empty document if there is none.
     /// An existing document is never overwritten.
     pub async fn init(&self) -> Result<Init, Error> {
+        self.init_with(&FleetDoc::new())
+            .await
+    }
+
+    /// Create the bucket if needed, then publish `doc` as the first document,
+    /// so readers never see an empty fleet before it. A document already
+    /// there is left untouched and reported as [`Init::AlreadyExists`].
+    pub async fn init_with(&self, doc: &FleetDoc) -> Result<Init, Error> {
         self.s3
             .create_bucket(&self.bucket)
             .await
             .map_err(|e| self.classify(e))?;
-        let body = FleetDoc::new()
+        let body = doc
             .to_yaml()?
             .into_bytes();
         match self

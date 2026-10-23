@@ -1,9 +1,68 @@
 //! The Fleet handle against a real S3: init, load, commit, and a lost race.
 //! The fleet is the test bucket itself; see tests/common for the environment.
+//! init_with needs a bucket with no document, so it has its own, named after
+//! the test bucket with `-init` appended, created on first run and kept.
 
 mod common;
 
+use s3_fleet::doc::FleetDoc;
+use s3_fleet::fleet::DOCUMENT_KEY;
+use s3_fleet::s3::S3Error;
 use s3_fleet::{Error, Fleet, Init};
+
+#[tokio::test]
+async fn init_with_publishes_the_first_document_and_never_overwrites() {
+    let Some(live) = common::live("init_with") else {
+        return;
+    };
+    let bucket = format!("{}-init", live.bucket);
+    let s3 = live.signed();
+    match s3
+        .delete_object(&bucket, DOCUMENT_KEY)
+        .await
+    {
+        Ok(()) | Err(S3Error::NotFound { .. }) => {}
+        Err(e) => panic!("clear {bucket}/{DOCUMENT_KEY}: {e}"),
+    }
+    let fleet = Fleet::new(&bucket, s3).unwrap();
+
+    let mut first = FleetDoc::new();
+    first
+        .set_attribute("migrated", "first")
+        .unwrap();
+    let init = fleet
+        .init_with(&first)
+        .await
+        .expect("init_with");
+    assert_eq!(init, Init::Created);
+    assert_eq!(
+        fleet
+            .load()
+            .await
+            .unwrap()
+            .doc,
+        first
+    );
+
+    let mut second = FleetDoc::new();
+    second
+        .set_attribute("migrated", "second")
+        .unwrap();
+    let init = fleet
+        .init_with(&second)
+        .await
+        .expect("second init_with");
+    assert_eq!(init, Init::AlreadyExists);
+    assert_eq!(
+        fleet
+            .load()
+            .await
+            .unwrap()
+            .doc,
+        first,
+        "an existing document must not be overwritten"
+    );
+}
 
 #[tokio::test]
 async fn concurrent_commits_conflict() {
