@@ -202,6 +202,7 @@ mod tests {
             anonymous,
             code: None,
             body: String::new(),
+            request_id: None,
         }
     }
 

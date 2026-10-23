@@ -169,7 +169,7 @@ pub enum S3Error {
         url: String,
     },
     /// HTTP 403. When `anonymous`, the object may also simply not exist.
-    #[error("{method} {url}: HTTP 403{}{}", describe(code.as_deref(), body), forbidden_hint(*anonymous))]
+    #[error("{method} {url}: HTTP 403{}{}{}", describe(code.as_deref(), body), request(request_id.as_deref()), forbidden_hint(*anonymous))]
     Forbidden {
         /// HTTP method.
         method: Method,
@@ -181,9 +181,12 @@ pub enum S3Error {
         code: Option<String>,
         /// Response body, capped.
         body: String,
+        /// The x-amz-request-id header, which on a multi-zone service also
+        /// names the zone that answered.
+        request_id: Option<String>,
     },
     /// HTTP 404.
-    #[error("{method} {url}: HTTP 404{}", describe(code.as_deref(), body))]
+    #[error("{method} {url}: HTTP 404{}{}", describe(code.as_deref(), body), request(request_id.as_deref()))]
     NotFound {
         /// HTTP method.
         method: Method,
@@ -193,6 +196,9 @@ pub enum S3Error {
         code: Option<String>,
         /// Response body, capped.
         body: String,
+        /// The x-amz-request-id header, which on a multi-zone service also
+        /// names the zone that answered.
+        request_id: Option<String>,
     },
     /// HTTP 412, or a 409 `ConditionalRequestConflict`: another writer won.
     #[error("{method} {url}: precondition failed, the object changed")]
@@ -209,7 +215,7 @@ pub enum S3Error {
         bucket: String,
     },
     /// Any other non-success status.
-    #[error("{method} {url}: HTTP {status}{}", describe(code.as_deref(), body))]
+    #[error("{method} {url}: HTTP {status}{}{}", describe(code.as_deref(), body), request(request_id.as_deref()))]
     Status {
         /// HTTP method.
         method: Method,
@@ -221,6 +227,9 @@ pub enum S3Error {
         code: Option<String>,
         /// Response body, capped.
         body: String,
+        /// The x-amz-request-id header, which on a multi-zone service also
+        /// names the zone that answered.
+        request_id: Option<String>,
     },
 }
 
@@ -230,6 +239,11 @@ fn describe(code: Option<&str>, body: &str) -> String {
         None if body.is_empty() => String::new(),
         None => format!(": {body}"),
     }
+}
+
+fn request(id: Option<&str>) -> String {
+    id.map(|id| format!(" [request {id}]"))
+        .unwrap_or_default()
 }
 
 fn forbidden_hint(anonymous: bool) -> &'static str {
@@ -574,6 +588,14 @@ impl S3 {
         if status.is_success() {
             return Ok(resp);
         }
+        let request_id = resp
+            .headers()
+            .get("x-amz-request-id")
+            .and_then(|v| {
+                v.to_str()
+                    .ok()
+            })
+            .map(str::to_string);
         let body = match resp
             .text()
             .await
@@ -588,11 +610,19 @@ impl S3 {
             &body,
             self.credentials
                 .is_none(),
+            request_id,
         ))
     }
 }
 
-fn classify(method: Method, url: &str, status: StatusCode, body: &str, anonymous: bool) -> S3Error {
+fn classify(
+    method: Method,
+    url: &str,
+    status: StatusCode,
+    body: &str,
+    anonymous: bool,
+    request_id: Option<String>,
+) -> S3Error {
     let code = xml_element(body, "Code");
     let url = url.to_string();
     let body = cap(body.trim());
@@ -603,12 +633,14 @@ fn classify(method: Method, url: &str, status: StatusCode, body: &str, anonymous
             anonymous,
             code,
             body,
+            request_id,
         },
         StatusCode::NOT_FOUND => S3Error::NotFound {
             method,
             url,
             code,
             body,
+            request_id,
         },
         StatusCode::PRECONDITION_FAILED => S3Error::PreconditionFailed { method, url },
         StatusCode::CONFLICT if code.as_deref() == Some("ConditionalRequestConflict") => {
@@ -620,6 +652,7 @@ fn classify(method: Method, url: &str, status: StatusCode, body: &str, anonymous
             status,
             code,
             body,
+            request_id,
         },
     }
 }
@@ -776,15 +809,22 @@ mod tests {
         let url = "https://e/b/k";
         let denied = "<Error><Code>AccessDenied</Code></Error>";
         assert!(matches!(
-            classify(Method::GET, url, StatusCode::FORBIDDEN, denied, true),
+            classify(Method::GET, url, StatusCode::FORBIDDEN, denied, true, None),
             S3Error::Forbidden { anonymous: true, code: Some(c), .. } if c == "AccessDenied"
         ));
         assert!(matches!(
-            classify(Method::GET, url, StatusCode::NOT_FOUND, "<Code>NoSuchKey</Code>", false),
+            classify(Method::GET, url, StatusCode::NOT_FOUND, "<Code>NoSuchKey</Code>", false, None),
             S3Error::NotFound { code: Some(c), .. } if c == "NoSuchKey"
         ));
         assert!(matches!(
-            classify(Method::PUT, url, StatusCode::PRECONDITION_FAILED, "", false),
+            classify(
+                Method::PUT,
+                url,
+                StatusCode::PRECONDITION_FAILED,
+                "",
+                false,
+                None
+            ),
             S3Error::PreconditionFailed { .. }
         ));
         assert!(matches!(
@@ -793,7 +833,8 @@ mod tests {
                 url,
                 StatusCode::CONFLICT,
                 "<Code>ConditionalRequestConflict</Code>",
-                false
+                false,
+                None
             ),
             S3Error::PreconditionFailed { .. }
         ));
@@ -803,7 +844,8 @@ mod tests {
                 url,
                 StatusCode::CONFLICT,
                 "<Code>BucketAlreadyExists</Code>",
-                false
+                false,
+                None
             ),
             S3Error::Status {
                 status: StatusCode::CONFLICT,
@@ -814,16 +856,33 @@ mod tests {
 
     #[test]
     fn anonymous_forbidden_says_it_may_be_missing() {
-        let e = classify(Method::GET, "u", StatusCode::FORBIDDEN, "", true);
+        let e = classify(Method::GET, "u", StatusCode::FORBIDDEN, "", true, None);
         assert!(
             e.to_string()
                 .contains("may be missing"),
             "{e}"
         );
-        let e = classify(Method::GET, "u", StatusCode::FORBIDDEN, "", false);
+        let e = classify(Method::GET, "u", StatusCode::FORBIDDEN, "", false, None);
         assert!(
             !e.to_string()
                 .contains("may be missing"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn request_id_is_shown() {
+        let e = classify(
+            Method::HEAD,
+            "u",
+            StatusCode::FORBIDDEN,
+            "",
+            false,
+            Some("tx0001-prod3".to_string()),
+        );
+        assert!(
+            e.to_string()
+                .contains("[request tx0001-prod3]"),
             "{e}"
         );
     }
