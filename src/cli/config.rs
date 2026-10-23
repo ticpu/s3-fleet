@@ -91,10 +91,19 @@ pub fn user_config_path() -> Result<PathBuf, ConfigError> {
 }
 
 /// The config files in effect: `explicit` alone, or the system file then the
-/// user's, each skipped when absent.
-pub fn load_layers(explicit: Option<&Path>) -> Result<Vec<Layer>, ConfigError> {
+/// user's, each skipped when absent. A missing `explicit` file is an error,
+/// unless `creating` it is the command's job (setup).
+pub fn load_layers(explicit: Option<&Path>, creating: bool) -> Result<Vec<Layer>, ConfigError> {
     if let Some(path) = explicit {
-        return Ok(vec![read_layer(path)?]);
+        return match read_layer(path) {
+            Ok(layer) => Ok(vec![layer]),
+            Err(ConfigError::Read { source, .. })
+                if creating && source.kind() == io::ErrorKind::NotFound =>
+            {
+                Ok(Vec::new())
+            }
+            Err(e) => Err(e),
+        };
     }
     let mut layers = Vec::new();
     for path in [PathBuf::from(SYSTEM_CONFIG), user_config_path()?] {

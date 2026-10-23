@@ -229,6 +229,7 @@ impl Ctx {
             layers: config::load_layers(
                 cli.config
                     .as_deref(),
+                matches!(cli.command, Command::Setup),
             )?,
             allow_stale: cli.allow_stale,
             timeout: Duration::from_secs(cli.timeout),
